@@ -602,6 +602,7 @@ export class PermissionService extends BaseService {
         startDate: null,
         endDate: null,
         cancelAtPeriodEnd: null,
+        remainingCredits: null,
       };
     }
 
@@ -637,6 +638,7 @@ export class PermissionService extends BaseService {
         startDate: null,
         endDate: null,
         cancelAtPeriodEnd: null,
+        remainingCredits: null,
       };
     }
 
@@ -657,6 +659,7 @@ export class PermissionService extends BaseService {
           startDate: null,
           endDate: null,
           cancelAtPeriodEnd: null,
+          remainingCredits: null,
         };
       }
 
@@ -692,6 +695,7 @@ export class PermissionService extends BaseService {
           adminSubscription.trialEnd ||
           null,
         cancelAtPeriodEnd: adminSubscription.cancelAtPeriodEnd ?? null,
+        remainingCredits: adminSubscription.remainingCredits,
       };
     }
 
@@ -718,6 +722,7 @@ export class PermissionService extends BaseService {
         startDate: inactiveState.startDate,
         endDate: inactiveState.endDate,
         cancelAtPeriodEnd: null,
+        remainingCredits: null,
       };
     }
 
@@ -748,6 +753,7 @@ export class PermissionService extends BaseService {
         subscription.currentPeriodStart || subscription.trialStart || null,
       endDate: subscription.currentPeriodEnd || subscription.trialEnd || null,
       cancelAtPeriodEnd: subscription.cancelAtPeriodEnd ?? null,
+      remainingCredits: subscription.remainingCredits,
     };
   }
 

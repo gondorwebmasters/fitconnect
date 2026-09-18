@@ -66,6 +66,14 @@ export const BAD_REQUEST_ERRORS = {
     'Cannot backdate this subscription: the resulting period has already fully elapsed',
   FUTURE_SUBSCRIPTION_ALREADY_SCHEDULED:
     'There is already a future subscription scheduled for this user',
+  SESSION_COUNT_MUST_BE_POSITIVE:
+    'sessionCount must be a positive integer (or null for unlimited)',
+  SESSION_PACK_CANNOT_HAVE_TRIAL:
+    'A session pack (plan with sessionCount) cannot have a trial period',
+  CANNOT_REACTIVATE_SESSION_PACK:
+    'A session pack is single-use and cannot be reactivated. Create a new subscription instead.',
+  CANNOT_CHANGE_PLAN_WITH_SESSION_PACK:
+    'Plan changes into or out of a session pack are not allowed. Cancel and schedule a new subscription instead.',
 } as const;
 
 export const CONFLICT_ERRORS = {

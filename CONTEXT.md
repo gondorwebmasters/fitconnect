@@ -46,6 +46,21 @@ Rules:
 - Permitted **only if no overlapping entitlement exists**: no subscription for the same user+company in status `ACTIVE`, `TRIALING`, `PAST_DUE`, or `PAUSED` whose paid period `[currentPeriodStart, currentPeriodEnd]` intersects the new subscription's whole span `[startDate, periodEnd]`. A `CANCELED` subscription never blocks (a member who gave up coverage may have the gap backfilled).
 - Not gated by role: backdating can only ever **shorten** a member's period, so there is no incentive to abuse it.
 
+**Session Pack (Bono)**:
+A **Plan** that, in addition to its time interval, carries a finite number of **Session Credits**. Every plan has a time span; a Session Pack additionally caps how many schedules the member may attend within it. The pack ends when *either* its credits are exhausted *or* its period end is reached — whichever comes first. A plain time-based plan is simply a plan with unlimited credits. A Session Pack is **single-use**: it never auto-renews and a closed pack cannot be reactivated; buying another pack creates a new subscription (via **Future Subscription** if one is still live). Session Packs may be free/cash (`amount === 0`) like any other plan, but never carry a trial period.
+
+**Session Credit (Crédito de sesión)**:
+The consumable unit of a **Session Pack**: one credit entitles a member to register on one **Schedule**. A credit is **consumed at registration time** (not when the schedule takes place) — a no-show still spends the credit. A credit is **refunded** when the member unregisters before the schedule starts, or when the gym cancels the schedule (manually or via automatic cut-off). Joining a **Waitlist** does not consume a credit; it requires at least one available credit, and the credit is consumed at the moment of promotion — a waitlisted member with no credits left is skipped.
+
+Rules:
+- The credit total is **snapshotted onto the subscription** when it is created; editing the plan's credit count later never changes packs already sold.
+- Reaching **0 credits does not end the subscription**: it stays active until its period end (the member keeps access to everything, including the schedules already booked) — only *new* registrations are refused. The end of the pack is communicated by exposing remaining credits, not by a new access state; `hasActive` remains the single gate.
+- A registration made **by an admin or coach on the member's behalf** consumes a credit exactly like a self-registration, and is refused at 0 credits. To gift a session, the admin first adjusts credits (audited, with a mandatory reason, gated like radical cancellation) and then registers the member.
+- A **gym-side cancellation always refunds** the registered members' credits — even for a schedule that has already taken place — unless the pack is already closed. A credit is lost only when the member themselves chooses not to attend.
+- **Plan changes** (`changePlan`, prorated) are not allowed into or out of a Session Pack; the route is deferred cancellation + a **Future Subscription** with the new pack.
+
+Rationale for consuming at booking time and for keeping the subscription alive at 0 credits: [ADR 0004](./docs/adr/0004-session-credits-consumed-at-booking.md).
+
 **Invariant — CANCELED means the paid period is over**:
 A `CANCELED` subscription never holds a still-live paid period: `CANCELED ⇒ currentPeriodEnd <= now`. This now holds **by construction**, not by convention (see [ADR 0003](./docs/adr/0003-deferred-only-cancellation.md)). There are exactly two live routes into `CANCELED`, both invariant-preserving:
 

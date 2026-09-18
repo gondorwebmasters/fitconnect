@@ -242,6 +242,8 @@ input CreatePlanInput {
     interval: PlanInterval!
     intervalCount: Int
     trialPeriodDays: Int
+    """Session Pack: nº de sesiones. Vacío = ilimitado. Incompatible con trialPeriodDays > 0."""
+    sessionCount: Int
     features: [String]
     metadata: JSON
 }
@@ -251,6 +253,9 @@ input UpdatePlanInput {
     name: String
     description: String
     amount: Float
+    trialPeriodDays: Int
+    """Session Pack: nº de sesiones. null = vuelve a ilimitado. No altera suscripciones ya creadas (snapshot)."""
+    sessionCount: Int
     features: [String]
     metadata: JSON
     status: PlanStatus

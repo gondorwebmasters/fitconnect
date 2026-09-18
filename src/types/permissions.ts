@@ -25,6 +25,11 @@ export interface LoginPermissionsContext {
   startDate?: Date | null;
   endDate?: Date | null;
   cancelAtPeriodEnd?: boolean | null;
+  /**
+   * Session Credits restantes de la suscripción vigente.
+   * null ⇒ ilimitado (plan temporal) o sin suscripción.
+   */
+  remainingCredits?: number | null;
 }
 
 export interface CompanyPermissionsContext {

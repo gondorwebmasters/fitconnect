@@ -4,6 +4,7 @@ import { Plan, PlanInterval, PlanStatus } from '../entities/Plan';
 import { ServiceResponse } from '../types/common.type';
 import {
   BadRequestError,
+  BAD_REQUEST_ERRORS,
   createServiceResponse,
   NotFoundError,
 } from '../utils/errors.util';
@@ -19,6 +20,8 @@ export interface CreatePlanInput {
   interval: PlanInterval;
   intervalCount?: number;
   trialPeriodDays?: number;
+  /** Session Pack: nº de créditos. null/undefined ⇒ ilimitado. */
+  sessionCount?: number | null;
   features?: string[];
   metadata?: Record<string, any>;
   companyId?: string;
@@ -29,6 +32,9 @@ export interface UpdatePlanInput {
   name?: string;
   description?: string;
   amount?: number;
+  trialPeriodDays?: number | null;
+  /** Session Pack: nº de créditos. null ⇒ vuelve a ilimitado. */
+  sessionCount?: number | null;
   features?: string[];
   metadata?: Record<string, any>;
   status?: PlanStatus;
@@ -60,6 +66,8 @@ export class PlanService extends BaseService {
       throw new BadRequestError('amount must be greater than or equal to 0');
     }
 
+    this.assertValidSessionPack(input.sessionCount, input.trialPeriodDays);
+
     // Verificar nombre único por empresa
     const existing = await this.em.findOne(
       Plan,
@@ -84,6 +92,7 @@ export class PlanService extends BaseService {
       interval: input.interval,
       intervalCount: input.intervalCount ?? 1,
       trialPeriodDays: input.trialPeriodDays,
+      sessionCount: input.sessionCount ?? null,
       features: input.features,
       metadata: input.metadata,
       company: input.companyId,
@@ -113,6 +122,8 @@ export class PlanService extends BaseService {
    * Nota: cambiar el `amount` de un plan no afecta a las suscripciones activas
    * — estas siguen con el precio original hasta que se renueven o se migren
    * explícitamente. Implementa esa lógica en SubscriptionService si la necesitas.
+   * Lo mismo aplica a `sessionCount`: los créditos se snapshotean en la
+   * suscripción al crearla, así que editar el plan nunca altera packs ya vendidos.
    */
   async updatePlan(input: UpdatePlanInput): Promise<ServiceResponse> {
     if (!input.id) {
@@ -128,12 +139,28 @@ export class PlanService extends BaseService {
       throw new NotFoundError('Plan');
     }
 
+    // Validar la combinación resultante (no solo lo que viene en el input)
+    // antes de mutar nada, para que un rechazo deje el plan intacto.
+    const nextSessionCount =
+      input.sessionCount !== undefined ? input.sessionCount : plan.sessionCount;
+    const nextTrialDays =
+      input.trialPeriodDays !== undefined
+        ? input.trialPeriodDays
+        : plan.trialPeriodDays;
+    this.assertValidSessionPack(nextSessionCount, nextTrialDays);
+
     if (input.name !== undefined) plan.name = input.name;
     if (input.description !== undefined) plan.description = input.description;
     if (input.amount !== undefined) {
       if (input.amount < 0)
         throw new BadRequestError('amount must be greater than or equal to 0');
       plan.amount = input.amount;
+    }
+    if (input.trialPeriodDays !== undefined) {
+      plan.trialPeriodDays = input.trialPeriodDays ?? undefined;
+    }
+    if (input.sessionCount !== undefined) {
+      plan.sessionCount = input.sessionCount;
     }
     if (input.features !== undefined) plan.features = input.features;
     if (input.metadata !== undefined) {
@@ -163,6 +190,30 @@ export class PlanService extends BaseService {
     return createServiceResponse(200, 'Plan updated successfully', true, {
       plan,
     });
+  }
+
+  /**
+   * Reglas de un Session Pack (ver CONTEXT.md):
+   *  - `sessionCount`, si está informado, es un entero > 0.
+   *  - Un pack nunca lleva trial.
+   * Con `sessionCount` null/undefined no se aplica ninguna regla nueva.
+   */
+  private assertValidSessionPack(
+    sessionCount: number | null | undefined,
+    trialPeriodDays: number | null | undefined
+  ): void {
+    if (sessionCount === null || sessionCount === undefined) return;
+
+    if (!Number.isInteger(sessionCount) || sessionCount <= 0) {
+      throw new BadRequestError(
+        BAD_REQUEST_ERRORS.SESSION_COUNT_MUST_BE_POSITIVE
+      );
+    }
+    if ((trialPeriodDays ?? 0) > 0) {
+      throw new BadRequestError(
+        BAD_REQUEST_ERRORS.SESSION_PACK_CANNOT_HAVE_TRIAL
+      );
+    }
   }
 
   /**

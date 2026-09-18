@@ -771,6 +771,8 @@ export class AuthService extends BaseService {
         startDate: permissionsContext.startDate || null,
         endDate: permissionsContext.endDate || null,
         cancelAtPeriodEnd: permissionsContext.cancelAtPeriodEnd ?? null,
+        renewsAt: permissionsContext.renewsAt ?? null,
+        remainingCredits: permissionsContext.remainingCredits ?? null,
       },
       permissions: permissionsContext.permissionNames,
     });
@@ -789,6 +791,8 @@ export class AuthService extends BaseService {
         startDate: permissionsContext.startDate || null,
         endDate: permissionsContext.endDate || null,
         cancelAtPeriodEnd: permissionsContext.cancelAtPeriodEnd ?? null,
+        renewsAt: permissionsContext.renewsAt ?? null,
+        remainingCredits: permissionsContext.remainingCredits ?? null,
       },
       permissions: permissionsContext.permissionNames,
     });

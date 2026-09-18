@@ -57,6 +57,13 @@ export class Plan extends BaseEntity {
   @Property({ type: 'smallint', nullable: true })
   trialPeriodDays?: number = 7;
 
+  /**
+   * Session Pack (Bono): número finito de Session Credits que incluye el plan.
+   * null ⇒ ilimitado (plan temporal clásico). Ver CONTEXT.md → Session Pack.
+   */
+  @Property({ type: 'smallint', nullable: true })
+  sessionCount?: number | null;
+
   @Enum(() => PlanStatus)
   @Index()
   status: PlanStatus = PlanStatus.ACTIVE;

@@ -620,6 +620,15 @@ export class SubscriptionService extends BaseService {
       );
     }
 
+    // Un Session Pack es de un solo uso: reactivarlo abriría un periodo nuevo
+    // sin créditos nuevos y con cancelAtPeriodEnd = false (renovable). La
+    // ruta correcta es una suscripción nueva con el pack.
+    if (this.isSessionPack(subscription.plan)) {
+      throw new BadRequestError(
+        BAD_REQUEST_ERRORS.CANNOT_REACTIVATE_SESSION_PACK
+      );
+    }
+
     const isFree = subscription.plan.amount === 0;
 
     if (!isFree) {
@@ -1314,7 +1323,10 @@ export class SubscriptionService extends BaseService {
       ? await this.getPaymentMethodOrFail(input.paymentMethodId, customer)
       : await this.getDefaultPaymentMethod(customer);
 
-    const trialDays = input.trialPeriodDays ?? plan.trialPeriodDays ?? 0;
+    // Un Session Pack nunca lleva trial, venga de donde venga el valor.
+    const trialDays = this.isSessionPack(plan)
+      ? 0
+      : (input.trialPeriodDays ?? plan.trialPeriodDays ?? 0);
     const now = moment().startOf('day').toDate();
     const baseStart = input.startDate
       ? moment(input.startDate).startOf('day').toDate()
@@ -1345,6 +1357,7 @@ export class SubscriptionService extends BaseService {
       nextBillingDate: periodEnd,
       quantity: input.quantity ?? 1,
       failedPaymentAttempts: 0,
+      ...this.buildCreditSnapshot(plan),
       // TEMPORAL: toda suscripcion nueva nace marcada para cancelarse al
       // terminar su periodo actual. El CRON (processBillingCycle) ya
       // respeta este flag y la pasara a CANCELED en cuanto currentPeriodEnd
@@ -1352,6 +1365,8 @@ export class SubscriptionService extends BaseService {
       // implemente el flujo de renovacion real en produccion, este valor
       // dejara de ser fijo y pasara a depender de la decision del usuario
       // (ej. un toggle de "renovacion automatica" en el input).
+      // EXCEPCION PERMANENTE: un Session Pack nunca se auto-renueva, asi que
+      // para packs este flag seguira siendo true aunque llegue ese toggle.
       cancelAtPeriodEnd: true,
       metadata: {
         ...input.metadata,
@@ -1423,9 +1438,10 @@ export class SubscriptionService extends BaseService {
       nextBillingDate: periodEnd,
       quantity: input.quantity ?? 1,
       failedPaymentAttempts: 0,
+      ...this.buildCreditSnapshot(plan),
       // Misma regla TEMPORAL que createSubscriptionFromScratch: nace marcada
       // para cancelarse al terminar su período; el CRON la pasará a CANCELED
-      // cuando currentPeriodEnd venza.
+      // cuando currentPeriodEnd venza. (Para packs, permanente: nunca renuevan.)
       cancelAtPeriodEnd: true,
       metadata: {
         ...input.metadata,
@@ -1510,6 +1526,15 @@ export class SubscriptionService extends BaseService {
   ): Promise<ServiceResponse> {
     const oldPlan = subscription.plan;
     const now = new Date();
+
+    // No hay prorrateo con sentido entre días y créditos: un cambio hacia o
+    // desde un Session Pack se rechaza siempre. La ruta correcta es
+    // cancelación diferida + Suscripción Futura con el nuevo plan.
+    if (this.isSessionPack(oldPlan) || this.isSessionPack(newPlan)) {
+      throw new BadRequestError(
+        BAD_REQUEST_ERRORS.CANNOT_CHANGE_PLAN_WITH_SESSION_PACK
+      );
+    }
 
     if (prorate) {
       await this.applyPlanChangeProration(subscription, oldPlan, newPlan, now);
@@ -2284,6 +2309,26 @@ export class SubscriptionService extends BaseService {
       isDefault: true,
       status: PaymentMethodStatus.ACTIVE,
     });
+  }
+
+  /** Un plan es Session Pack si tiene un nº finito de créditos. */
+  private isSessionPack(plan: Plan): boolean {
+    return plan.sessionCount !== null && plan.sessionCount !== undefined;
+  }
+
+  /**
+   * Snapshot de créditos al crear una suscripción (ver CONTEXT.md → Session
+   * Credit). Se copia `plan.sessionCount` para que editar el plan después no
+   * altere los packs ya vendidos. null ⇒ ilimitado.
+   */
+  private buildCreditSnapshot(plan: Plan): {
+    creditsTotal: number | null;
+    creditsUsed: number;
+  } {
+    return {
+      creditsTotal: plan.sessionCount ?? null,
+      creditsUsed: 0,
+    };
   }
 
   private calculatePeriodEnd(start: Date, plan: Plan): Date {

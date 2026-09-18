@@ -90,6 +90,7 @@ type User {
     isSuperAdmin: Boolean
     activeCompanyId: ID
     isPending: Boolean
+    """Auth payload (login / getMe): { hasActive, subscriptionState, planName, status, isInTrial, trialEndsAt, startDate, endDate, cancelAtPeriodEnd, renewsAt, remainingCredits }. remainingCredits es null si el plan es ilimitado."""
     subscription: JSON
     permissions: [String]
 }
@@ -244,6 +245,8 @@ type Plan {
     interval: PlanInterval!
     intervalCount: Int!
     trialPeriodDays: Int
+    """Session Pack (Bono): nº de créditos de sesión del plan. null = ilimitado (plan temporal clásico). Un pack nunca tiene trial ni se auto-renueva."""
+    sessionCount: Int
     status: PlanStatus!
     isActive: Boolean!
     features: [String]
@@ -278,6 +281,12 @@ type Subscription {
     isInTrial: Boolean
     isPastDue: Boolean
     daysUntilRenewal: Int
+    """Snapshot de Plan.sessionCount al crear la suscripción. null = ilimitado."""
+    creditsTotal: Int
+    """Créditos de sesión consumidos."""
+    creditsUsed: Int!
+    """creditsTotal − creditsUsed (derivado). null = ilimitado."""
+    remainingCredits: Int
     metadata: JSON
     transactions: [Transaction]
 }
