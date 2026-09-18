@@ -432,4 +432,268 @@ describe('ScheduleService — Session Credits', () => {
       });
     });
   });
+
+  // ─────────────────────────────────────────────
+  // Waitlist — entrar exige crédito, no consume (issue #110)
+  // ─────────────────────────────────────────────
+  describe('addUserToSchedule — waitlist entry', () => {
+    function fullSchedule(): Schedule {
+      const schedule = buildSchedule({ maxUsers: 1 });
+      schedule.users = createMockCollection([{ id: 'other' }]);
+      return schedule;
+    }
+
+    it('rejects with NO_SESSION_CREDITS when the member has 0 credits left', async () => {
+      subscription = buildSubscription({ creditsTotal: 4, creditsUsed: 4 });
+      const schedule = fullSchedule();
+      mockScheduleRepo.findOne.mockResolvedValue(schedule);
+
+      await expect(
+        service.addUserToSchedule(member as any, 'sch-1')
+      ).rejects.toThrow(VAL_ERRORS.NO_SESSION_CREDITS);
+
+      expect(schedule.waitListUsers.getItems()).toHaveLength(0);
+      expect(mockEm.execute).not.toHaveBeenCalled();
+      expect(mockEm.flush).not.toHaveBeenCalled();
+    });
+
+    it('lets the member in with ≥1 credit without touching the counter', async () => {
+      subscription = buildSubscription({ creditsTotal: 4, creditsUsed: 3 });
+      const schedule = fullSchedule();
+      mockScheduleRepo.findOne.mockResolvedValue(schedule);
+
+      const res = await service.addUserToSchedule(member as any, 'sch-1');
+
+      expect(res.message).toBe('User added to waitlist');
+      expect(schedule.waitListUsers.getItems().map((u: any) => u.id)).toEqual([
+        'user-1',
+      ]);
+      expect(mockEm.execute).not.toHaveBeenCalled();
+      expect(subscription.creditsUsed).toBe(3);
+      expect(subscription.metadata.history).toHaveLength(0);
+    });
+
+    it('lets an unlimited subscription in', async () => {
+      subscription = buildSubscription({ creditsTotal: null, creditsUsed: 0 });
+      const schedule = fullSchedule();
+      mockScheduleRepo.findOne.mockResolvedValue(schedule);
+
+      const res = await service.addUserToSchedule(member as any, 'sch-1');
+
+      expect(res.message).toBe('User added to waitlist');
+      expect(mockEm.execute).not.toHaveBeenCalled();
+    });
+
+    it('lets a member without a live subscription in (unchanged behaviour)', async () => {
+      subscription = null;
+      const schedule = fullSchedule();
+      mockScheduleRepo.findOne.mockResolvedValue(schedule);
+
+      const res = await service.addUserToSchedule(member as any, 'sch-1');
+
+      expect(res.message).toBe('User added to waitlist');
+    });
+
+    it('rejects an admin adding a 0-credit member to the waitlist just the same', async () => {
+      const admin = {
+        id: 'user-1',
+        contextRole: UserRoleEnum.ADMIN,
+        activeCompanyId: 'comp-1',
+      };
+      subscription = buildSubscription({ creditsTotal: 2, creditsUsed: 2 });
+      const schedule = fullSchedule();
+      mockScheduleRepo.findOne.mockResolvedValue(schedule);
+
+      await expect(
+        service.addUserToSchedule(admin as any, 'sch-1')
+      ).rejects.toThrow(VAL_ERRORS.NO_SESSION_CREDITS);
+    });
+  });
+
+  // ─────────────────────────────────────────────
+  // Promoción desde la waitlist — consume al promocionar (issue #110)
+  // Se dispara por el flujo público removeUserFromSchedule.
+  // ─────────────────────────────────────────────
+  describe('promotion from the waitlist (via removeUserFromSchedule)', () => {
+    const admin = {
+      id: 'user-admin',
+      contextRole: UserRoleEnum.ADMIN,
+      activeCompanyId: 'comp-1',
+    };
+    let subsByUser: Record<string, any>;
+    let leaver: User;
+
+    function buildWaitlisted(id: string): User {
+      const u = new User({} as any);
+      u.id = id;
+      u.schedules = createMockCollection([]);
+      u.waitListSchedules = createMockCollection([]);
+      return u;
+    }
+
+    function setupSchedule(waitlist: User[]): Schedule {
+      // La clase ya ha empezado: el que se va no recibe reembolso, así el único
+      // UPDATE que se ejecuta es el consumo del promocionado.
+      const schedule = buildSchedule({
+        maxUsers: 1,
+        startDate: moment().subtract(1, 'hour').valueOf(),
+      });
+      schedule.users = createMockCollection([leaver]);
+      schedule.waitListUsers = createMockCollection(waitlist);
+      mockScheduleRepo.findOne.mockResolvedValue(schedule);
+      return schedule;
+    }
+
+    let errorSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      // La notificación de promoción falla con el EM mockeado y se traga el
+      // error por diseño; no es lo que se prueba aquí.
+      errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      leaver = buildWaitlisted('leaver');
+      subsByUser = {};
+      mockEm.findOne.mockImplementation(async (entity: any, query: any) => {
+        if (entity === User) {
+          if (query.id === 'leaver') return leaver;
+          return users[query.id] ?? null;
+        }
+        if (entity === Company) return { scheduleOptions };
+        if (entity === Subscription) return subsByUser[query.user] ?? null;
+        return null;
+      });
+    });
+
+    afterEach(() => {
+      errorSpy.mockRestore();
+    });
+
+    let users: Record<string, User>;
+
+    it('consumes 1 credit of the promoted member atomically and records credit_consumed', async () => {
+      const wl1 = buildWaitlisted('wl-1');
+      users = { 'wl-1': wl1 };
+      subsByUser['wl-1'] = buildSubscription({
+        id: 'sub-wl-1',
+        creditsTotal: 4,
+        creditsUsed: 1,
+      });
+      const schedule = setupSchedule([wl1]);
+      mockEm.execute.mockResolvedValue({
+        affectedRows: 1,
+        row: { credits_used: 2 },
+      });
+
+      const res = await service.removeUserFromSchedule(
+        admin as any,
+        'sch-1',
+        'leaver'
+      );
+
+      expect(res.success).toBe(true);
+      expect(schedule.users.getItems().map((u: any) => u.id)).toEqual(['wl-1']);
+      expect(schedule.waitListUsers.getItems()).toHaveLength(0);
+
+      expect(mockEm.execute).toHaveBeenCalledTimes(1);
+      const [sql, params] = mockEm.execute.mock.calls[0];
+      expect(sql).toMatch(/credits_used\s*<\s*credits_total/i);
+      expect(params).toEqual(['sub-wl-1', 'comp-1']);
+
+      const sub = subsByUser['wl-1'];
+      expect(sub.creditsUsed).toBe(2);
+      expect(sub.metadata.history).toHaveLength(1);
+      expect(sub.metadata.history[0]).toMatchObject({
+        event: 'credit_consumed',
+        actor: 'user-admin',
+        scheduleId: 'sch-1',
+      });
+      expect(mockEm.persist).toHaveBeenCalledWith(sub);
+    });
+
+    it('skips a candidate with 0 credits (dropping them from the waitlist) and promotes the next one', async () => {
+      const broke = buildWaitlisted('wl-broke');
+      const ok = buildWaitlisted('wl-ok');
+      users = { 'wl-broke': broke, 'wl-ok': ok };
+      subsByUser['wl-broke'] = buildSubscription({
+        id: 'sub-broke',
+        creditsTotal: 2,
+        creditsUsed: 2,
+      });
+      subsByUser['wl-ok'] = buildSubscription({
+        id: 'sub-ok',
+        creditsTotal: 2,
+        creditsUsed: 0,
+      });
+      const schedule = setupSchedule([broke, ok]);
+      // 1ª llamada: el UPDATE condicional no afecta filas (0 créditos);
+      // 2ª llamada: consumo del siguiente.
+      mockEm.execute
+        .mockResolvedValueOnce({ affectedRows: 0 })
+        .mockResolvedValueOnce({ affectedRows: 1, row: { credits_used: 1 } });
+
+      await service.removeUserFromSchedule(admin as any, 'sch-1', 'leaver');
+
+      expect(schedule.users.getItems().map((u: any) => u.id)).toEqual([
+        'wl-ok',
+      ]);
+      expect(schedule.waitListUsers.getItems()).toHaveLength(0);
+      expect(mockEm.execute).toHaveBeenCalledTimes(2);
+      expect(mockEm.execute.mock.calls[0][1]).toEqual(['sub-broke', 'comp-1']);
+      expect(mockEm.execute.mock.calls[1][1]).toEqual(['sub-ok', 'comp-1']);
+
+      expect(subsByUser['wl-broke'].creditsUsed).toBe(2);
+      expect(subsByUser['wl-broke'].metadata.history).toHaveLength(0);
+      expect(subsByUser['wl-ok'].creditsUsed).toBe(1);
+      expect(subsByUser['wl-ok'].metadata.history[0]).toMatchObject({
+        event: 'credit_consumed',
+        scheduleId: 'sch-1',
+      });
+    });
+
+    it('leaves the seat free when nobody on the waitlist has credits', async () => {
+      const a = buildWaitlisted('wl-a');
+      const b = buildWaitlisted('wl-b');
+      users = { 'wl-a': a, 'wl-b': b };
+      subsByUser['wl-a'] = buildSubscription({ id: 'sub-a', creditsUsed: 4 });
+      subsByUser['wl-b'] = buildSubscription({ id: 'sub-b', creditsUsed: 4 });
+      const schedule = setupSchedule([a, b]);
+      mockEm.execute.mockResolvedValue({ affectedRows: 0 });
+
+      const res = await service.removeUserFromSchedule(
+        admin as any,
+        'sch-1',
+        'leaver'
+      );
+
+      expect(res.success).toBe(true);
+      expect(schedule.users.getItems()).toHaveLength(0);
+      expect(schedule.waitListUsers.getItems()).toHaveLength(0);
+      expect(mockEm.execute).toHaveBeenCalledTimes(2);
+    });
+
+    it('promotes an unlimited subscription without touching the counter', async () => {
+      const wl1 = buildWaitlisted('wl-1');
+      users = { 'wl-1': wl1 };
+      subsByUser['wl-1'] = buildSubscription({
+        id: 'sub-wl-1',
+        creditsTotal: null,
+      });
+      const schedule = setupSchedule([wl1]);
+
+      await service.removeUserFromSchedule(admin as any, 'sch-1', 'leaver');
+
+      expect(schedule.users.getItems().map((u: any) => u.id)).toEqual(['wl-1']);
+      expect(mockEm.execute).not.toHaveBeenCalled();
+    });
+
+    it('promotes a member without a live subscription (unchanged behaviour)', async () => {
+      const wl1 = buildWaitlisted('wl-1');
+      users = { 'wl-1': wl1 };
+      const schedule = setupSchedule([wl1]);
+
+      await service.removeUserFromSchedule(admin as any, 'sch-1', 'leaver');
+
+      expect(schedule.users.getItems().map((u: any) => u.id)).toEqual(['wl-1']);
+      expect(mockEm.execute).not.toHaveBeenCalled();
+    });
+  });
 });

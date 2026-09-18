@@ -1082,7 +1082,12 @@ export class ScheduleService extends BaseService {
           schedule.users.length < schedule.maxUsers &&
           schedule.waitListUsers.length > 0
         ) {
-          await this.promoteNextUser(schedule, scheduleOptions, emToUse);
+          await this.promoteNextUser(
+            schedule,
+            scheduleOptions,
+            currentUser.id,
+            emToUse
+          );
         }
       }
 
@@ -1239,6 +1244,17 @@ export class ScheduleService extends BaseService {
 
     let message = 'User added to schedule';
     if (isFull) {
+      // Waitlist: entrar no consume, pero exige ≥ 1 crédito disponible; el
+      // crédito se descuenta al promocionar (ADR 0004). Igual para todos los
+      // roles, como el consumo en reserva real.
+      const subscription = await this.findLiveSubscription(
+        user.id,
+        currentUser.activeCompanyId
+      );
+      if (subscription && !this.hasSessionCreditAvailable(subscription)) {
+        throw new ValidationError(VAL_ERRORS.NO_SESSION_CREDITS);
+      }
+
       schedule.waitListUsers.add(user);
       user.waitListSchedules.add(schedule);
       message = 'User added to waitlist';
@@ -1384,7 +1400,12 @@ export class ScheduleService extends BaseService {
         }
 
         // Si hay gente en la waitlist, meter al primero
-        await this.promoteNextUser(schedule, scheduleOptions, tem);
+        await this.promoteNextUser(
+          schedule,
+          scheduleOptions,
+          currentUser.id,
+          tem
+        );
 
         tem.persist(schedule);
         await tem.flush();
@@ -1490,6 +1511,13 @@ export class ScheduleService extends BaseService {
 
       schedule.state = status;
 
+      // Cancelación del gym: cada inscrito con pack recupera su crédito, aunque
+      // la clase ya haya pasado (ADR 0004). Va en la misma transacción que el
+      // cambio de estado para no cancelar sin devolver (ni al revés).
+      if (status === ScheduleState.CANCELLED) {
+        await this.refundScheduleCredits(schedule, currentUser.id, emToUse);
+      }
+
       emToUse.persist(schedule);
       await emToUse.flush();
 
@@ -1513,7 +1541,7 @@ export class ScheduleService extends BaseService {
     if (tem) {
       return await executeStatusChange(tem);
     } else {
-      return await executeStatusChange(this.em);
+      return await this.em.transactional(executeStatusChange);
     }
   }
 
@@ -1531,7 +1559,7 @@ export class ScheduleService extends BaseService {
     const scheduleRepo = this.em.getRepository(Schedule);
     const schedule = await scheduleRepo.findOne(
       { id: scheduleId },
-      { populate: ['admin', 'users', 'waitListUsers'] }
+      { populate: ['admin', 'users', 'waitListUsers', 'company'] }
     );
 
     if (!schedule) {
@@ -1545,12 +1573,25 @@ export class ScheduleService extends BaseService {
       throw new ForbiddenError('You are not authorized to perform this action');
     }
 
-    if (schedule.users.length > 0 || schedule.waitListUsers.length > 0) {
-      throw new ValidationError(VAL_ERRORS.SCHEDULE_HAS_USERS);
-    }
+    // Borrar con inscritos es una cancelación del gym: se devuelve el crédito
+    // a cada inscrito con pack (ADR 0004) antes de eliminar el schedule. La
+    // waitlist nunca consumió, así que no hay nada que devolver.
+    const hadUsers = schedule.users.length > 0;
 
-    this.em.remove(schedule);
-    await this.em.flush();
+    await this.em.transactional(async tem => {
+      if (hadUsers) {
+        await this.refundScheduleCredits(schedule, currentUser.id, tem);
+      }
+      tem.remove(schedule);
+      await tem.flush();
+    });
+
+    if (hadUsers) {
+      await this.sendScheduleCancellationNotifications(
+        schedule,
+        'El horario ha sido eliminado.'
+      );
+    }
 
     return createServiceResponse(200, 'Schedule removed successfully', true);
   }
@@ -1678,6 +1719,12 @@ export class ScheduleService extends BaseService {
       }
 
       if (cancelledSchedules.length > 0) {
+        // Cancelación automática del gym: reembolso a cada inscrito con pack
+        // (ADR 0004). Sin request en el CRON, el actor es 'system'.
+        for (const schedule of cancelledSchedules) {
+          await this.refundScheduleCredits(schedule, 'system');
+        }
+
         await this.em.flush();
         cancelledCount = cancelledSchedules.length;
 
@@ -1844,6 +1891,21 @@ export class ScheduleService extends BaseService {
   }
 
   /**
+   * Lectura no atómica: solo sirve de puerta (p.ej. entrar en waitlist). La
+   * garantía real la da el UPDATE condicional de consumeSessionCredit.
+   * Ilimitada (creditsTotal null) ⇒ siempre true.
+   */
+  private hasSessionCreditAvailable(subscription: Subscription): boolean {
+    if (
+      subscription.creditsTotal === null ||
+      subscription.creditsTotal === undefined
+    ) {
+      return true;
+    }
+    return subscription.creditsUsed < subscription.creditsTotal;
+  }
+
+  /**
    * Descuenta 1 Session Credit con un UPDATE condicional atómico
    * (`credits_used < credits_total`): dos reservas simultáneas con el último
    * crédito nunca prosperan ambas. 0 filas afectadas ⇒ NO_SESSION_CREDITS.
@@ -1859,11 +1921,33 @@ export class ScheduleService extends BaseService {
     actorId: string,
     em: EntityManager = this.em
   ): Promise<void> {
+    const consumed = await this.tryConsumeSessionCredit(
+      subscription,
+      scheduleId,
+      actorId,
+      em
+    );
+    if (!consumed) {
+      throw new ValidationError(VAL_ERRORS.NO_SESSION_CREDITS);
+    }
+  }
+
+  /**
+   * Variante no lanzadora de consumeSessionCredit: `false` si el UPDATE
+   * condicional no afecta filas (sin créditos). Ilimitada ⇒ `true` sin tocar
+   * nada.
+   */
+  private async tryConsumeSessionCredit(
+    subscription: Subscription,
+    scheduleId: string,
+    actorId: string,
+    em: EntityManager = this.em
+  ): Promise<boolean> {
     if (
       subscription.creditsTotal === null ||
       subscription.creditsTotal === undefined
     ) {
-      return;
+      return true;
     }
 
     const result = await (em as SqlEntityManager).execute<{
@@ -1881,7 +1965,7 @@ export class ScheduleService extends BaseService {
     );
 
     if (!result.affectedRows) {
-      throw new ValidationError(VAL_ERRORS.NO_SESSION_CREDITS);
+      return false;
     }
 
     subscription.creditsUsed =
@@ -1894,6 +1978,7 @@ export class ScheduleService extends BaseService {
       `Session credit consumed for schedule ${scheduleId} (${subscription.creditsUsed}/${subscription.creditsTotal})`
     );
     em.persist(subscription);
+    return true;
   }
 
   /**
@@ -1941,6 +2026,31 @@ export class ScheduleService extends BaseService {
       `Session credit refunded for schedule ${scheduleId} (${subscription.creditsUsed}/${subscription.creditsTotal})`
     );
     em.persist(subscription);
+  }
+
+  /**
+   * Cancelación del schedule por parte del gym (manual, borrado o cut-off):
+   * cada inscrito con pack recupera 1 crédito, **aunque la clase ya haya
+   * pasado** — un crédito solo se pierde por decisión del propio miembro
+   * (ADR 0004). Sin suscripción viva no hay nada que devolver. Se filtra por la
+   * empresa del schedule y no por la request: el CRON no tiene contexto.
+   */
+  private async refundScheduleCredits(
+    schedule: Schedule,
+    actorId: string,
+    em: EntityManager = this.em
+  ): Promise<void> {
+    const companyId = schedule.company?.id;
+    for (const user of schedule.users.getItems()) {
+      const subscription = await this.findLiveSubscription(
+        user.id,
+        companyId,
+        em
+      );
+      if (subscription) {
+        await this.refundSessionCredit(subscription, schedule.id, actorId, em);
+      }
+    }
   }
 
   /**
@@ -2011,10 +2121,20 @@ export class ScheduleService extends BaseService {
 
   /**
    * Promotes the first valid user from the waitlist recursively/iteratively.
+   *
+   * Session Credits (ADR 0004): el crédito se consume aquí, al promocionar,
+   * con el mismo UPDATE condicional atómico que la reserva directa. Un
+   * candidato sin créditos (0 filas afectadas) **sale de la waitlist** y se
+   * prueba con el siguiente — igual que quien ha alcanzado sus límites de
+   * reserva. Si nadie puede, la plaza queda libre.
+   *
+   * `actorId` firma la entrada `credit_consumed` del historial (quien
+   * disparó la promoción: el que se desapunta o el admin que amplía plazas).
    */
   private async promoteNextUser(
     schedule: Schedule,
     scheduleOptions: ScheduleOptions | null,
+    actorId: string,
     em: EntityManager = this.em
   ): Promise<void> {
     while (schedule.waitListUsers.length > 0) {
@@ -2053,6 +2173,27 @@ export class ScheduleService extends BaseService {
           em.persist(schedule);
           em.persist(user);
           continue;
+        }
+
+        const subscription = await this.findLiveSubscription(
+          user.id,
+          schedule.company?.id,
+          em
+        );
+        if (subscription) {
+          const consumed = await this.tryConsumeSessionCredit(
+            subscription,
+            schedule.id,
+            actorId,
+            em
+          );
+          if (!consumed) {
+            schedule.waitListUsers.remove(user);
+            user.waitListSchedules.remove(schedule);
+            em.persist(schedule);
+            em.persist(user);
+            continue;
+          }
         }
 
         schedule.waitListUsers.remove(user);

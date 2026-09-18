@@ -20,7 +20,10 @@ de diseño que condicionan todo lo demás:
      tanto si se apunta el propio miembro como si lo apunta un admin/coach. Con 0
      créditos la inscripción se rechaza (`NO_SESSION_CREDITS`).
    - Entrar en **waitlist** no consume: exige ≥ 1 crédito disponible y el crédito
-     se descuenta al promocionar. Un candidato sin créditos se salta.
+     se descuenta al promocionar (mismo UPDATE condicional atómico). Un
+     candidato sin créditos se salta **y sale de la waitlist** (igual que quien
+     ha alcanzado sus límites de reserva); se prueba con el siguiente y, si nadie
+     puede, la plaza queda libre. Si luego recupera créditos, vuelve a apuntarse.
    - **Reembolso** (`creditsUsed − 1`, nunca por debajo de 0): si el miembro se
      desapunta antes de `startDate`, o si el gym cancela el schedule (manual o
      cut-off automático) — **incluso si la clase ya pasó**. No se reembolsa si
