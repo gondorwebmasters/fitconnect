@@ -287,7 +287,10 @@ describe('ScheduleService - Waitlist and Booking Limits logic', () => {
   });
 
   describe('removeSchedule', () => {
-    it('should throw error when schedule has registered users', async () => {
+    // Borrar con inscritos/waitlist es una cancelación del gym (issue #111):
+    // se reembolsa el crédito a los inscritos y se elimina. Ver
+    // schedule.gym-cancel-refund.test.ts.
+    it('should remove schedule with registered users (gym cancellation)', async () => {
       const currentUser = { id: 'admin-1', contextRole: UserRoleEnum.ADMIN };
       const schedule = new Schedule({
         admin: { id: 'admin-1' } as any,
@@ -298,12 +301,15 @@ describe('ScheduleService - Waitlist and Booking Limits logic', () => {
 
       mockScheduleRepo.findOne.mockResolvedValue(schedule);
 
-      await expect(
-        scheduleService.removeSchedule(currentUser as any, 'sch-1')
-      ).rejects.toThrow(ValidationError);
+      const response = await scheduleService.removeSchedule(
+        currentUser as any,
+        'sch-1'
+      );
+      expect(response.success).toBe(true);
+      expect(mockEntityManager.remove).toHaveBeenCalledWith(schedule);
     });
 
-    it('should throw error when schedule has users in waitlist', async () => {
+    it('should remove schedule with users in waitlist', async () => {
       const currentUser = { id: 'admin-1', contextRole: UserRoleEnum.ADMIN };
       const schedule = new Schedule({
         admin: { id: 'admin-1' } as any,
@@ -314,9 +320,12 @@ describe('ScheduleService - Waitlist and Booking Limits logic', () => {
 
       mockScheduleRepo.findOne.mockResolvedValue(schedule);
 
-      await expect(
-        scheduleService.removeSchedule(currentUser as any, 'sch-1')
-      ).rejects.toThrow(ValidationError);
+      const response = await scheduleService.removeSchedule(
+        currentUser as any,
+        'sch-1'
+      );
+      expect(response.success).toBe(true);
+      expect(mockEntityManager.remove).toHaveBeenCalledWith(schedule);
     });
 
     it('should remove schedule successfully when there are no users and no waitlisted users', async () => {

@@ -25,9 +25,12 @@ de diseño que condicionan todo lo demás:
      ha alcanzado sus límites de reserva); se prueba con el siguiente y, si nadie
      puede, la plaza queda libre. Si luego recupera créditos, vuelve a apuntarse.
    - **Reembolso** (`creditsUsed − 1`, nunca por debajo de 0): si el miembro se
-     desapunta antes de `startDate`, o si el gym cancela el schedule (manual o
-     cut-off automático) — **incluso si la clase ya pasó**. No se reembolsa si
-     la suscripción ya está cerrada (`CANCELED` o periodo vencido).
+     desapunta antes de `startDate`, o si el gym cancela el schedule (cambio a
+     `CANCELLED`, borrado con inscritos o cut-off automático) — **incluso si la
+     clase ya pasó**. Borrar un schedule con inscritos ya no se rechaza: es una
+     cancelación más (reembolsa y notifica). No se reembolsa si la suscripción
+     ya está cerrada (`CANCELED` o periodo vencido). Reactivar un schedule
+     cancelado (`CANCELLED → AVAILABLE`) no vuelve a consumir.
    - Un **no-show** no reembolsa: el crédito se pierde solo por decisión del
      propio miembro.
    - El descuento se hace con un UPDATE condicional atómico
