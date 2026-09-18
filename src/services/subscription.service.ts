@@ -68,6 +68,12 @@ interface RadicalCancelSubscriptionInput {
   reason: string;
 }
 
+interface AdjustSessionCreditsInput {
+  subscriptionId: string;
+  delta: number;
+  reason: string;
+}
+
 /**
  * Input para el cambio de plan con prorrateo.
  * upgrade = cobra la diferencia ahora.
@@ -992,6 +998,75 @@ export class SubscriptionService extends BaseService {
       true,
       { subscription }
     );
+  }
+
+  /**
+   * Ajuste manual de Session Credits por un admin (regalar una sesión,
+   * corregir un error). Mueve creditsTotal en `delta` (positivo o negativo) y
+   * exige motivo; queda auditado en el historial como `credit_adjusted` con
+   * delta, motivo y actor. Gate de permisos en el resolver (el mismo que
+   * radicalCancelSubscription).
+   *
+   * Rechaza si la suscripción es ilimitada (no es un pack), está cerrada
+   * (CANCELED o periodo vencido, ver ADR 0004) o si el resultado dejaría
+   * creditsUsed > creditsTotal o creditsTotal < 0.
+   */
+  public async adjustSessionCredits(
+    input: AdjustSessionCreditsInput,
+    adminId: string,
+    requesterCompanyId?: string
+  ): Promise<ServiceResponse> {
+    if (!input.subscriptionId) {
+      throw new BadRequestError(BAD_REQUEST_ERRORS.SUBSCRIPTION_ID_REQUIRED);
+    }
+    if (!input.reason?.trim()) {
+      throw new BadRequestError(BAD_REQUEST_ERRORS.REASON_REQUIRED);
+    }
+    if (!Number.isInteger(input.delta) || input.delta === 0) {
+      throw new BadRequestError(BAD_REQUEST_ERRORS.CREDIT_DELTA_INVALID);
+    }
+
+    const subscription = await this.em.findOne(Subscription, {
+      id: input.subscriptionId,
+    });
+
+    if (!subscription) throw new NotFoundError('Subscription');
+    this.assertBelongsToCompany(subscription, requesterCompanyId);
+
+    if (
+      subscription.creditsTotal === null ||
+      subscription.creditsTotal === undefined
+    ) {
+      throw new BadRequestError(BAD_REQUEST_ERRORS.CREDIT_ADJUSTMENT_UNLIMITED);
+    }
+    if (this.isClosed(subscription)) {
+      throw new BadRequestError(BAD_REQUEST_ERRORS.CREDIT_ADJUSTMENT_CLOSED);
+    }
+
+    const newTotal = subscription.creditsTotal + input.delta;
+    if (newTotal < 0 || newTotal < (subscription.creditsUsed ?? 0)) {
+      throw new BadRequestError(
+        BAD_REQUEST_ERRORS.CREDIT_ADJUSTMENT_OUT_OF_BOUNDS
+      );
+    }
+
+    const reason = input.reason.trim();
+    subscription.creditsTotal = newTotal;
+
+    const sign = input.delta > 0 ? '+' : '';
+    this.appendHistory(
+      subscription,
+      'credit_adjusted',
+      adminId,
+      `[ADMIN] Session credits adjusted by ${sign}${input.delta} (total ${newTotal}). Reason: ${reason}`,
+      { delta: input.delta, reason }
+    );
+
+    await this.em.flush();
+
+    return createServiceResponse(200, 'Session credits adjusted', true, {
+      subscription,
+    });
   }
 
   public async getSubscription(
@@ -2019,13 +2094,25 @@ export class SubscriptionService extends BaseService {
     subscription.nextBillingDate = undefined;
   }
 
+  /**
+   * Cerrada ⇒ CANCELED o periodo ya vencido (ver ADR 0004). Sobre una
+   * suscripción cerrada no se tocan los créditos.
+   */
+  private isClosed(subscription: Subscription, now = new Date()): boolean {
+    return (
+      subscription.status === SubscriptionStatus.CANCELED ||
+      (!!subscription.currentPeriodEnd && subscription.currentPeriodEnd <= now)
+    );
+  }
+
   private appendHistory(
     subscription: Subscription,
     event: string,
     actor: string,
-    detail: string
+    detail: string,
+    extra: Record<string, any> = {}
   ): void {
-    const entry = this.buildHistoryEntry(event, actor, detail);
+    const entry = this.buildHistoryEntry(event, actor, detail, extra);
     const current: any[] = subscription.metadata?.history ?? [];
     subscription.metadata = {
       ...subscription.metadata,
@@ -2036,9 +2123,13 @@ export class SubscriptionService extends BaseService {
   private buildHistoryEntry(
     event: string,
     actor: string,
-    detail: string
+    detail: string,
+    extra: Record<string, any> = {}
   ): Record<string, any> {
+    // extra va primero: los campos base (event/actor/timestamp) nunca se
+    // sobrescriben desde un llamador.
     return {
+      ...extra,
       event,
       actor,
       detail,

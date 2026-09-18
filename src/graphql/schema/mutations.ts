@@ -108,6 +108,14 @@ type Mutation {
     forceRenewal(subscriptionId: ID!): SubscriptionResponse!
     extendSubscriptionPeriod(subscriptionId: ID!, days: Int!, reason: String!): SubscriptionResponse!
     applySubscriptionCredit(subscriptionId: ID!, amountInCents: Int!, reason: String!): SubscriptionResponse!
+    """
+    Ajuste manual auditado de Session Credits (solo admin, mismo permiso que
+    radicalCancelSubscription). Mueve creditsTotal en delta (positivo o
+    negativo, distinto de 0) con motivo obligatorio; queda en el historial como
+    credit_adjusted. Se rechaza sobre suscripciones ilimitadas o cerradas y si
+    el resultado dejaria creditsUsed > creditsTotal o creditsTotal < 0.
+    """
+    adjustSessionCredits(subscriptionId: ID!, delta: Int!, reason: String!): SubscriptionResponse!
 
     # ── Invoice ───────────────────────────────────────────────────────
     voidInvoice(invoiceId: ID!): InvoiceResponse!
