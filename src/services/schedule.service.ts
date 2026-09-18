@@ -6,6 +6,7 @@ import { Company } from '../entities/Company';
 import { Schedule } from '../entities/Schedule';
 import { ScheduleOptions } from '../entities/ScheduleOptions';
 import { ScheduleProgrammed } from '../entities/ScheduleProgrammed';
+import { Subscription, SubscriptionStatus } from '../entities/Subscription';
 import { User } from '../entities/User';
 import { CurrentUser, ServiceResponse } from '../types/common.type';
 import { ScheduleState, ScheduleType, UserRoleEnum } from '../types/enums';
@@ -1241,29 +1242,53 @@ export class ScheduleService extends BaseService {
       schedule.waitListUsers.add(user);
       user.waitListSchedules.add(schedule);
       message = 'User added to waitlist';
+      this.em.persist(schedule);
+      await this.em.flush();
     } else {
-      schedule.users.add(user);
-      user.schedules.add(schedule);
-      const limitsAfterBooking = this.checkUserBookingLimits(
-        user,
-        schedule,
-        scheduleOptions
-      );
-      if (
-        limitsAfterBooking.isMaxUserBookingsReached ||
-        limitsAfterBooking.isMaxUserBookingsTodayReached
-      ) {
-        await this.cleanupUserWaitlists(
+      // Reserva real: el crédito se gasta aquí, no al pasar la clase (ADR 0004).
+      // Se aplica a todos los roles: un admin/coach que se apunta consume igual
+      // y es rechazado igual a 0 créditos. El UPDATE condicional y la inserción
+      // en la M:N van en la misma transacción para no gastar un crédito sin
+      // plaza (ni al revés).
+      await this.em.transactional(async tem => {
+        const subscription = await this.findLiveSubscription(
+          user.id,
+          currentUser.activeCompanyId,
+          tem
+        );
+        if (subscription) {
+          await this.consumeSessionCredit(
+            subscription,
+            schedule.id,
+            currentUser.id,
+            tem
+          );
+        }
+
+        schedule.users.add(user);
+        user.schedules.add(schedule);
+        const limitsAfterBooking = this.checkUserBookingLimits(
           user,
           schedule,
-          limitsAfterBooking.isMaxUserBookingsReached,
-          limitsAfterBooking.isMaxUserBookingsTodayReached
+          scheduleOptions
         );
-      }
-    }
+        if (
+          limitsAfterBooking.isMaxUserBookingsReached ||
+          limitsAfterBooking.isMaxUserBookingsTodayReached
+        ) {
+          await this.cleanupUserWaitlists(
+            user,
+            schedule,
+            limitsAfterBooking.isMaxUserBookingsReached,
+            limitsAfterBooking.isMaxUserBookingsTodayReached,
+            tem
+          );
+        }
 
-    this.em.persist(schedule);
-    await this.em.flush();
+        tem.persist(schedule);
+        await tem.flush();
+      });
+    }
 
     return createServiceResponse(200, message, true, {
       schedule,
@@ -1334,19 +1359,44 @@ export class ScheduleService extends BaseService {
     let message = 'User removed from schedule';
 
     if (schedule.users.contains(user)) {
-      schedule.users.remove(user);
+      await this.em.transactional(async tem => {
+        schedule.users.remove(user);
 
-      // Si hay gente en la waitlist, meter al primero
-      await this.promoteNextUser(schedule, scheduleOptions);
+        // Reembolso solo si la clase aún no ha empezado: desapuntarse después
+        // (o no acudir) pierde el crédito (ADR 0004). Se devuelve a la
+        // suscripción viva del miembro; si el pack ya está cerrado no hay nada
+        // que devolver.
+        const isBeforeStart = moment().isBefore(Number(schedule.startDate));
+        if (isBeforeStart) {
+          const subscription = await this.findLiveSubscription(
+            user.id,
+            currentUser.activeCompanyId,
+            tem
+          );
+          if (subscription) {
+            await this.refundSessionCredit(
+              subscription,
+              schedule.id,
+              currentUser.id,
+              tem
+            );
+          }
+        }
+
+        // Si hay gente en la waitlist, meter al primero
+        await this.promoteNextUser(schedule, scheduleOptions, tem);
+
+        tem.persist(schedule);
+        await tem.flush();
+      });
     } else if (schedule.waitListUsers.contains(user)) {
       schedule.waitListUsers.remove(user);
       message = 'User removed from waitlist';
+      this.em.persist(schedule);
+      await this.em.flush();
     } else {
       throw new ForbiddenError('User not in schedule or waitlist');
     }
-
-    this.em.persist(schedule);
-    await this.em.flush();
 
     return createServiceResponse(200, message, true, {
       schedule,
@@ -1758,6 +1808,164 @@ export class ScheduleService extends BaseService {
     return {
       isMaxUserBookingsReached,
       isMaxUserBookingsTodayReached,
+    };
+  }
+
+  // ═══════════════════════════════════════════
+  // SESSION CREDITS (ADR 0004)
+  // ═══════════════════════════════════════════
+
+  /**
+   * Suscripción vigente ahora mismo del usuario en la empresa activa, o null.
+   * Misma definición que la consulta de suscripción activa del
+   * PermissionService (ACTIVE/TRIALING y periodo en curso). Con companyId explícito se salta el
+   * filtro `companyContext` para no depender del header de la request; sin él
+   * se deja actuar al filtro.
+   */
+  private async findLiveSubscription(
+    userId: string,
+    companyId: string | undefined,
+    em: EntityManager = this.em
+  ): Promise<Subscription | null> {
+    const now = new Date();
+    return em.findOne(
+      Subscription,
+      {
+        user: userId,
+        ...(companyId ? { company: companyId } : {}),
+        status: {
+          $in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING],
+        },
+        currentPeriodStart: { $lte: now },
+        currentPeriodEnd: { $gte: now },
+      },
+      companyId ? { filters: false } : {}
+    );
+  }
+
+  /**
+   * Descuenta 1 Session Credit con un UPDATE condicional atómico
+   * (`credits_used < credits_total`): dos reservas simultáneas con el último
+   * crédito nunca prosperan ambas. 0 filas afectadas ⇒ NO_SESSION_CREDITS.
+   * Suscripción ilimitada (creditsTotal null) ⇒ no-op.
+   *
+   * SQL crudo: salta el filtro `companyContext`, por eso filtra company_id a
+   * mano. El valor devuelto por RETURNING es el autoritativo y se vuelca en la
+   * entidad para que el flush posterior no escriba un contador desfasado.
+   */
+  private async consumeSessionCredit(
+    subscription: Subscription,
+    scheduleId: string,
+    actorId: string,
+    em: EntityManager = this.em
+  ): Promise<void> {
+    if (
+      subscription.creditsTotal === null ||
+      subscription.creditsTotal === undefined
+    ) {
+      return;
+    }
+
+    const result = await (em as SqlEntityManager).execute<{
+      affectedRows: number;
+      row?: { credits_used: number };
+    }>(
+      `UPDATE "subscription"
+         SET credits_used = credits_used + 1, updated_at = now()
+       WHERE id = ? AND company_id = ?
+         AND credits_total IS NOT NULL
+         AND credits_used < credits_total
+       RETURNING credits_used`,
+      [subscription.id, subscription.company.id],
+      'run'
+    );
+
+    if (!result.affectedRows) {
+      throw new ValidationError(VAL_ERRORS.NO_SESSION_CREDITS);
+    }
+
+    subscription.creditsUsed =
+      result.row?.credits_used ?? subscription.creditsUsed + 1;
+    this.appendCreditHistory(
+      subscription,
+      'credit_consumed',
+      actorId,
+      scheduleId,
+      `Session credit consumed for schedule ${scheduleId} (${subscription.creditsUsed}/${subscription.creditsTotal})`
+    );
+    em.persist(subscription);
+  }
+
+  /**
+   * Devuelve 1 Session Credit (`credits_used − 1`), nunca por debajo de 0.
+   * 0 filas afectadas (ya estaba a 0) ⇒ no-op silencioso. Ilimitada ⇒ no-op.
+   */
+  private async refundSessionCredit(
+    subscription: Subscription,
+    scheduleId: string,
+    actorId: string,
+    em: EntityManager = this.em
+  ): Promise<void> {
+    if (
+      subscription.creditsTotal === null ||
+      subscription.creditsTotal === undefined
+    ) {
+      return;
+    }
+
+    const result = await (em as SqlEntityManager).execute<{
+      affectedRows: number;
+      row?: { credits_used: number };
+    }>(
+      `UPDATE "subscription"
+         SET credits_used = credits_used - 1, updated_at = now()
+       WHERE id = ? AND company_id = ?
+         AND credits_total IS NOT NULL
+         AND credits_used > 0
+       RETURNING credits_used`,
+      [subscription.id, subscription.company.id],
+      'run'
+    );
+
+    if (!result.affectedRows) {
+      return;
+    }
+
+    subscription.creditsUsed =
+      result.row?.credits_used ?? Math.max(0, subscription.creditsUsed - 1);
+    this.appendCreditHistory(
+      subscription,
+      'credit_refunded',
+      actorId,
+      scheduleId,
+      `Session credit refunded for schedule ${scheduleId} (${subscription.creditsUsed}/${subscription.creditsTotal})`
+    );
+    em.persist(subscription);
+  }
+
+  /**
+   * Misma forma que SubscriptionService.buildHistoryEntry, más `scheduleId`.
+   */
+  private appendCreditHistory(
+    subscription: Subscription,
+    event: 'credit_consumed' | 'credit_refunded',
+    actor: string,
+    scheduleId: string,
+    detail: string
+  ): void {
+    const current: any[] = subscription.metadata?.history ?? [];
+    subscription.metadata = {
+      ...subscription.metadata,
+      history: [
+        ...current,
+        {
+          event,
+          actor,
+          detail,
+          scheduleId,
+          timestamp: new Date().toISOString(),
+        },
+      ],
     };
   }
 
