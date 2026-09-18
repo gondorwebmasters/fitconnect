@@ -685,6 +685,44 @@ describe('ScheduleService — Session Credits', () => {
       expect(mockEm.execute).not.toHaveBeenCalled();
     });
 
+    it('consumes on promotion triggered by updateSchedule growing maxUsers, skipping 0-credit candidates', async () => {
+      const broke = buildWaitlisted('wl-broke');
+      const ok = buildWaitlisted('wl-ok');
+      users = { 'wl-broke': broke, 'wl-ok': ok };
+      subsByUser['wl-broke'] = buildSubscription({
+        id: 'sub-broke',
+        creditsUsed: 4,
+      });
+      subsByUser['wl-ok'] = buildSubscription({ id: 'sub-ok', creditsUsed: 0 });
+      const schedule = buildSchedule({ maxUsers: 1 });
+      schedule.users = createMockCollection([leaver]);
+      schedule.waitListUsers = createMockCollection([broke, ok]);
+      mockScheduleRepo.findOne.mockResolvedValue(schedule);
+      mockEm.execute
+        .mockResolvedValueOnce({ affectedRows: 0 })
+        .mockResolvedValueOnce({ affectedRows: 1, row: { credits_used: 1 } });
+
+      const res = await service.updateSchedule({
+        currentUser: admin as any,
+        id: 'sch-1',
+        maxUsers: 2,
+      });
+
+      expect(res.success).toBe(true);
+      expect(schedule.users.getItems().map((u: any) => u.id)).toEqual([
+        'leaver',
+        'wl-ok',
+      ]);
+      expect(schedule.waitListUsers.getItems()).toHaveLength(0);
+      expect(subsByUser['wl-ok'].creditsUsed).toBe(1);
+      expect(subsByUser['wl-ok'].metadata.history[0]).toMatchObject({
+        event: 'credit_consumed',
+        actor: 'user-admin',
+        scheduleId: 'sch-1',
+      });
+      expect(subsByUser['wl-broke'].metadata.history).toHaveLength(0);
+    });
+
     it('promotes a member without a live subscription (unchanged behaviour)', async () => {
       const wl1 = buildWaitlisted('wl-1');
       users = { 'wl-1': wl1 };

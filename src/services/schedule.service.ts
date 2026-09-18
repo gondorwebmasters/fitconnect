@@ -2162,7 +2162,7 @@ export class ScheduleService extends BaseService {
           this.checkUserBookingLimits(user, schedule, scheduleOptions);
 
         if (isMaxUserBookingsReached || isMaxUserBookingsTodayReached) {
-          schedule.waitListUsers.remove(user);
+          this.dropFromWaitlist(schedule, user, em);
           await this.cleanupUserWaitlists(
             user,
             schedule,
@@ -2170,8 +2170,6 @@ export class ScheduleService extends BaseService {
             isMaxUserBookingsTodayReached,
             em
           );
-          em.persist(schedule);
-          em.persist(user);
           continue;
         }
 
@@ -2188,10 +2186,7 @@ export class ScheduleService extends BaseService {
             em
           );
           if (!consumed) {
-            schedule.waitListUsers.remove(user);
-            user.waitListSchedules.remove(schedule);
-            em.persist(schedule);
-            em.persist(user);
+            this.dropFromWaitlist(schedule, user, em);
             continue;
           }
         }
@@ -2230,6 +2225,21 @@ export class ScheduleService extends BaseService {
         schedule.waitListUsers.remove(nextUser);
       }
     }
+  }
+
+  /**
+   * Saca a un candidato de la waitlist de este schedule sin promocionarlo
+   * (límites alcanzados o sin créditos).
+   */
+  private dropFromWaitlist(
+    schedule: Schedule,
+    user: User,
+    em: EntityManager
+  ): void {
+    schedule.waitListUsers.remove(user);
+    user.waitListSchedules.remove(schedule);
+    em.persist(schedule);
+    em.persist(user);
   }
 
   /**
