@@ -245,13 +245,19 @@ export class UserService extends BaseService {
       throw new BadRequestError('Admin users must provide a Company name');
     }
 
-    const existingUser = await this.em.findOne(
+    const existingByEmail = await this.em.findOne(
       User,
-      { $or: [{ email }, { nickname }] },
+      { email },
       { filters: false }
     );
+    if (existingByEmail) throw new BadRequestError('Email already exists');
 
-    if (existingUser) throw new BadRequestError('User already exists');
+    const existingByNickname = await this.em.findOne(
+      User,
+      { nickname },
+      { filters: false }
+    );
+    if (existingByNickname) throw new BadRequestError('Nickname already exists');
 
     let newUser: User = this.em.create(User, userData);
 
@@ -335,13 +341,19 @@ export class UserService extends BaseService {
       throw new BadRequestError('No active company selected');
     }
 
-    const existingUser = await this.em.findOne(
+    const existingByEmail = await this.em.findOne(
       User,
-      { $or: [{ email }, { nickname }] },
+      { email },
       { filters: false }
     );
+    if (existingByEmail) throw new BadRequestError('Email already exists');
 
-    if (existingUser) throw new BadRequestError('User already exists');
+    const existingByNickname = await this.em.findOne(
+      User,
+      { nickname },
+      { filters: false }
+    );
+    if (existingByNickname) throw new BadRequestError('Nickname already exists');
 
     const newUser = this.em.create(User, {
       email,
