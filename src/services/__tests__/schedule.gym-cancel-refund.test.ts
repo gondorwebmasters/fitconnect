@@ -411,6 +411,22 @@ describe('ScheduleService — gym cancellation refunds session credits', () => {
       expect(mockEm.remove).toHaveBeenCalledWith(schedule);
     });
 
+    it('does not refund twice: deleting an already-CANCELLED schedule refunds nothing', async () => {
+      const u1 = buildUser('user-1');
+      subscriptionsByUser['user-1'] = buildSubscription({ user: 'user-1' });
+      const schedule = buildSchedule();
+      schedule.state = ScheduleState.CANCELLED;
+      schedule.users = createMockCollection([u1]);
+      mockScheduleRepo.findOne.mockResolvedValue(schedule);
+
+      const res = await service.removeSchedule(admin as any, 'sch-1');
+
+      expect(res.success).toBe(true);
+      expect(mockEm.execute).not.toHaveBeenCalled();
+      expect(subscriptionsByUser['user-1'].creditsUsed).toBe(2);
+      expect(mockEm.remove).toHaveBeenCalledWith(schedule);
+    });
+
     it('still deletes a schedule without users (no credit query at all)', async () => {
       const schedule = buildSchedule();
       mockScheduleRepo.findOne.mockResolvedValue(schedule);

@@ -1556,37 +1556,46 @@ export class ScheduleService extends BaseService {
       throw new UnauthorizedError();
     }
 
-    const scheduleRepo = this.em.getRepository(Schedule);
-    const schedule = await scheduleRepo.findOne(
-      { id: scheduleId },
-      { populate: ['admin', 'users', 'waitListUsers', 'company'] }
-    );
+    // Se carga y se borra dentro de la misma transacción para que la entidad
+    // pertenezca al contexto que la elimina (igual que changeScheduleStatus).
+    const { schedule, refunded } = await this.em.transactional(async tem => {
+      const scheduleRepo = tem.getRepository(Schedule);
+      const schedule = await scheduleRepo.findOne(
+        { id: scheduleId },
+        { populate: ['admin', 'users', 'waitListUsers', 'company'] }
+      );
 
-    if (!schedule) {
-      throw new NotFoundError('Schedule');
-    }
+      if (!schedule) {
+        throw new NotFoundError('Schedule');
+      }
 
-    if (
-      schedule.admin.id !== currentUser.id &&
-      currentUser.contextRole !== UserRoleEnum.ADMIN
-    ) {
-      throw new ForbiddenError('You are not authorized to perform this action');
-    }
+      if (
+        schedule.admin.id !== currentUser.id &&
+        currentUser.contextRole !== UserRoleEnum.ADMIN
+      ) {
+        throw new ForbiddenError(
+          'You are not authorized to perform this action'
+        );
+      }
 
-    // Borrar con inscritos es una cancelación del gym: se devuelve el crédito
-    // a cada inscrito con pack (ADR 0004) antes de eliminar el schedule. La
-    // waitlist nunca consumió, así que no hay nada que devolver.
-    const hadUsers = schedule.users.length > 0;
-
-    await this.em.transactional(async tem => {
-      if (hadUsers) {
+      // Borrar con inscritos es una cancelación del gym: se devuelve el
+      // crédito a cada inscrito con pack (ADR 0004) antes de eliminar. Si el
+      // schedule ya estaba CANCELLED el reembolso ya se hizo entonces — no se
+      // devuelve dos veces. La waitlist nunca consumió: nada que devolver.
+      const refunded =
+        schedule.users.length > 0 &&
+        schedule.state !== ScheduleState.CANCELLED;
+      if (refunded) {
         await this.refundScheduleCredits(schedule, currentUser.id, tem);
       }
+
       tem.remove(schedule);
       await tem.flush();
+
+      return { schedule, refunded };
     });
 
-    if (hadUsers) {
+    if (refunded) {
       await this.sendScheduleCancellationNotifications(
         schedule,
         'El horario ha sido eliminado.'

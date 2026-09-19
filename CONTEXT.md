@@ -6,7 +6,7 @@ Domain glossary and terms for the Fitconnect backend system.
 
 **Schedule**:
 A planned session or class at a gym/company, which has a specific capacity (maximum users) and an assigned administrator.
-A schedule cannot be deleted if it has registered users or users on the waitlist; in such cases, it is _cancelled_ (deactivated but preserved in history) instead of physically deleted. Past schedules are also preserved and never deleted automatically when their recurring template (Schedule Programmed) is removed.
+Deleting a schedule that still has registered users is treated as a **gym-side cancellation**: every registered member with a Session Pack gets their credit back (unless the schedule was already _cancelled_, in which case the refund already happened) and the members are notified, then the schedule is physically deleted. The preferred route for a class that will not take place is still to _cancel_ it (deactivated but preserved in history); deletion is for schedules created by mistake. Past schedules are also preserved and never deleted automatically when their recurring template (Schedule Programmed) is removed.
 
 **Schedule Programmed (Programación Semanal)**:
 A weekly recurring template that defines the days of the week, hours, capacity, and administrator (coach) for a type of session. It serves as the baseline to automatically spawn individual Schedule instances for future weeks.
