@@ -90,7 +90,7 @@ type User {
     isSuperAdmin: Boolean
     activeCompanyId: ID
     isPending: Boolean
-    """Auth payload (login / getMe): { hasActive, subscriptionState, planName, status, isInTrial, trialEndsAt, startDate, endDate, cancelAtPeriodEnd, renewsAt, remainingCredits }. remainingCredits es null si el plan es ilimitado."""
+    """Auth payload (login / getMe): { hasActive, subscriptionState, planName, status, isInTrial, trialEndsAt, startDate, endDate, cancelAtPeriodEnd, renewsAt, remainingCredits, creditsTotal }. remainingCredits y creditsTotal son null si el plan es ilimitado."""
     subscription: JSON
     permissions: [String]
 }

@@ -61,6 +61,7 @@ describe('PermissionService.getLoginPermissionsContext — remainingCredits', ()
 
     expect(ctx.hasActiveSubscription).toBe(true);
     expect(ctx.remainingCredits).toBe(3);
+    expect(ctx.creditsTotal).toBe(4);
     expect(ctx.renewsAt).toEqual(activeSubscription.currentPeriodEnd);
   });
 
@@ -83,6 +84,7 @@ describe('PermissionService.getLoginPermissionsContext — remainingCredits', ()
 
     expect(ctx.hasActiveSubscription).toBe(true);
     expect(ctx.remainingCredits).toBeNull();
+    expect(ctx.creditsTotal).toBeNull();
   });
 
   it('exposes remainingCredits = null when there is no active subscription', async () => {
@@ -92,5 +94,6 @@ describe('PermissionService.getLoginPermissionsContext — remainingCredits', ()
 
     expect(ctx.hasActiveSubscription).toBe(false);
     expect(ctx.remainingCredits).toBeNull();
+    expect(ctx.creditsTotal).toBeNull();
   });
 });
