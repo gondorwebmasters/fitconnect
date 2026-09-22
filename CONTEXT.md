@@ -8,6 +8,22 @@ Domain glossary and terms for the Fitconnect backend system.
 A planned session or class at a gym/company, which has a specific capacity (maximum users) and an assigned administrator.
 Deleting a schedule that still has registered users is treated as a **gym-side cancellation**: every registered member with a Session Pack gets their credit back (unless the schedule was already _cancelled_, in which case the refund already happened) and the members are notified, then the schedule is physically deleted. The preferred route for a class that will not take place is still to _cancel_ it (deactivated but preserved in history); deletion is for schedules created by mistake. Past schedules are also preserved and never deleted automatically when their recurring template (Schedule Programmed) is removed.
 
+**Restricted Schedule (Horario Restringido)**:
+A **Schedule** that carries a non-empty set of **Plans** (`allowedPlans`) and admits only members whose subscription is to one of them. An **empty set means no restriction** — the schedule is open to every member. The restriction is a *set*, not a single plan: the singular case ("only Premium") is a set of one.
+
+Rules:
+- **Evaluated only at registration time.** The gate asks: does this member have a *currently live* subscription (`hasActive`) whose plan is in `allowedPlans`? A **Future Subscription** to the required plan does **not** qualify, even if it will have started by the time the class takes place — the check is about now, not about the class date.
+- **A booking already made is firm.** Nothing revokes it: not the administrator restricting the schedule afterwards, not the member's subscription expiring or switching to another plan before the class. Same principle as reaching 0 **Session Credits** (see [ADR 0004](./docs/adr/0004-session-credits-consumed-at-booking.md)) — losing eligibility blocks *new* registrations, it never evicts. An administrator who wants a non-qualifying member out removes them by hand.
+- **Waitlist is checked twice**: on joining (so nobody waits for a seat they could never take) and again on promotion (eligibility may have lapsed in between). A candidate who no longer qualifies is skipped and dropped from that waitlist, the next one is tried, and if nobody can take it the seat stays free — identical to the out-of-credits rule.
+- **No role bypass.** The restriction applies to members, coaches and administrators alike; an administrator registering themselves on a Premium-only schedule without a live Premium subscription is refused. This follows from registration being self-service only (`addUserToSchedule` takes a schedule, never a target user) and matches the credit rule in ADR 0004.
+- **A restricted plan may still be archived.** Archiving a Plan that schedules require is permitted and warns the administrator how many schedules reference it. Those schedules become closed in practice — members holding a live subscription keep access until it lapses, and no new member can ever qualify. The restriction is **never silently dropped**: quietly reopening a restricted class would be a silent access failure.
+
+**Restriction on the template**: `ScheduleProgrammed` carries `allowedPlans` too, and seeds it into the Schedules it spawns. An individual Schedule may diverge afterwards, but **editing the template overwrites every future Schedule**, exactly as it already does for `title`, `maxUsers`, `type`, `age` and `admin`.
+
+**Exposure**: the API exposes both `allowedPlans` (the backoffice needs it to edit the restriction) and a per-user derived field saying whether the caller may register and why not (the mobile front needs it so the access rule lives in the back only). The derived field covers *this* restriction alone — capacity, credits and the booking window keep their own signals, so it does not become a catch-all.
+
+Rationale for evaluating only at registration and never evicting: [ADR 0005](./docs/adr/0005-plan-restriction-evaluated-at-booking.md).
+
 **Schedule Programmed (Programación Semanal)**:
 A weekly recurring template that defines the days of the week, hours, capacity, and administrator (coach) for a type of session. It serves as the baseline to automatically spawn individual Schedule instances for future weeks.
 
