@@ -5080,6 +5080,88 @@
     },
     {
       "columns": {
+        "schedule_id": {
+          "name": "schedule_id",
+          "type": "uuid",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": true,
+          "nullable": false,
+          "unique": false,
+          "length": null,
+          "precision": null,
+          "scale": null,
+          "default": null,
+          "comment": null,
+          "enumItems": [],
+          "mappedType": "uuid"
+        },
+        "plan_id": {
+          "name": "plan_id",
+          "type": "uuid",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": true,
+          "nullable": false,
+          "unique": false,
+          "length": null,
+          "precision": null,
+          "scale": null,
+          "default": null,
+          "comment": null,
+          "enumItems": [],
+          "mappedType": "uuid"
+        }
+      },
+      "name": "schedule_allowed_plans",
+      "schema": "public",
+      "indexes": [
+        {
+          "columnNames": [
+            "schedule_id",
+            "plan_id"
+          ],
+          "composite": true,
+          "constraint": false,
+          "keyName": "schedule_allowed_plans_pkey",
+          "unique": true,
+          "primary": true
+        }
+      ],
+      "checks": [],
+      "foreignKeys": {
+        "schedule_allowed_plans_plan_id_foreign": {
+          "columnNames": [
+            "plan_id"
+          ],
+          "constraintName": "schedule_allowed_plans_plan_id_foreign",
+          "localTableName": "public.schedule_allowed_plans",
+          "referencedTableName": "public.plan",
+          "referencedColumnNames": [
+            "id"
+          ],
+          "updateRule": "cascade",
+          "deleteRule": "cascade"
+        },
+        "schedule_allowed_plans_schedule_id_foreign": {
+          "columnNames": [
+            "schedule_id"
+          ],
+          "constraintName": "schedule_allowed_plans_schedule_id_foreign",
+          "localTableName": "public.schedule_allowed_plans",
+          "referencedTableName": "public.schedule",
+          "referencedColumnNames": [
+            "id"
+          ],
+          "updateRule": "cascade",
+          "deleteRule": "cascade"
+        }
+      },
+      "nativeEnums": {},
+      "comment": null
+    },
+    {
+      "columns": {
         "id": {
           "name": "id",
           "type": "uuid",
@@ -5512,6 +5594,88 @@
           ],
           "updateRule": "cascade",
           "deleteRule": "no action"
+        }
+      },
+      "nativeEnums": {},
+      "comment": null
+    },
+    {
+      "columns": {
+        "schedule_programmed_id": {
+          "name": "schedule_programmed_id",
+          "type": "uuid",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": true,
+          "nullable": false,
+          "unique": false,
+          "length": null,
+          "precision": null,
+          "scale": null,
+          "default": null,
+          "comment": null,
+          "enumItems": [],
+          "mappedType": "uuid"
+        },
+        "plan_id": {
+          "name": "plan_id",
+          "type": "uuid",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": true,
+          "nullable": false,
+          "unique": false,
+          "length": null,
+          "precision": null,
+          "scale": null,
+          "default": null,
+          "comment": null,
+          "enumItems": [],
+          "mappedType": "uuid"
+        }
+      },
+      "name": "schedule_programmed_allowed_plans",
+      "schema": "public",
+      "indexes": [
+        {
+          "columnNames": [
+            "schedule_programmed_id",
+            "plan_id"
+          ],
+          "composite": true,
+          "constraint": false,
+          "keyName": "schedule_programmed_allowed_plans_pkey",
+          "unique": true,
+          "primary": true
+        }
+      ],
+      "checks": [],
+      "foreignKeys": {
+        "schedule_programmed_allowed_plans_plan_id_foreign": {
+          "columnNames": [
+            "plan_id"
+          ],
+          "constraintName": "schedule_programmed_allowed_plans_plan_id_foreign",
+          "localTableName": "public.schedule_programmed_allowed_plans",
+          "referencedTableName": "public.plan",
+          "referencedColumnNames": [
+            "id"
+          ],
+          "updateRule": "cascade",
+          "deleteRule": "cascade"
+        },
+        "schedule_programmed_allowed_plans_schedule_progr_5f427_foreign": {
+          "columnNames": [
+            "schedule_programmed_id"
+          ],
+          "constraintName": "schedule_programmed_allowed_plans_schedule_progr_5f427_foreign",
+          "localTableName": "public.schedule_programmed_allowed_plans",
+          "referencedTableName": "public.schedule_programmed",
+          "referencedColumnNames": [
+            "id"
+          ],
+          "updateRule": "cascade",
+          "deleteRule": "cascade"
         }
       },
       "nativeEnums": {},
