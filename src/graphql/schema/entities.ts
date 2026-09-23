@@ -112,7 +112,7 @@ type Schedule {
     type: ScheduleType!
     """Restricted Schedule: planes que admite este schedule. Lista vacia = sin restriccion (abierto a todo el mundo)."""
     allowedPlans: [Plan!]!
-    """Derivado **por llamante**: si el llamante puede inscribirse en lo que respecta a la restriccion de planes, y por que no. Alcance limitado a esa regla: no absorbe aforo, creditos ni ventana de reserva. No cacheable entre usuarios."""
+    """Derivado **por llamante**: si el llamante puede ocupar una plaza en lo que respecta a la restriccion de planes, y por que no. canRegister false tambien impide apuntarse a la lista de espera: no se espera por una plaza que no se podria ocupar. Alcance limitado a esa regla: no absorbe aforo, creditos ni ventana de reserva. No cacheable entre usuarios."""
     planAccess: SchedulePlanAccess!
 }
 

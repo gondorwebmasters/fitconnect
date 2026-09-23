@@ -42,13 +42,17 @@ decisiones antes de escribir nada:
    llamante, así que "admin" aquí significa "un admin apuntándose a sí mismo".
    Misma regla que el Session Credit de ADR 0004.
 
-4. **El gate va ordenado *detrás* de aforo, límites de reserva y ventana de
+4. **El gate va ordenado *detrás* de los límites de reserva y de la ventana de
    reserva anticipada** (y, cuando exista, del crédito). El miembro debe oír el
-   motivo que de verdad aplica: si la clase está llena, el desenlace sigue
-   siendo el aforo (lista de espera); si le faltan créditos y *sí* tiene el plan
+   motivo que de verdad aplica: si le faltan créditos y *sí* tiene el plan
    correcto, el mensaje debe decirle que compre créditos, no que se cambie de
-   plan. Por eso la comprobación vive en la rama de inscripción efectiva, no
-   antes de decidir aforo.
+   plan.
+
+   El **aforo no es uno de esos motivos**: no es un rechazo que la restricción
+   pueda tapar, es una bifurcación entre plaza y lista de espera. Por eso el
+   gate va *antes* de repartir (issue #11) y el mismo error sirve para las dos
+   ramas: a quien no cualifica no se le ofrece esperar por una plaza que nunca
+   podría ocupar.
 
 5. **La regla vive en el back, y el back la expone ya evaluada.**
    `Schedule.planAccess` es un campo derivado **por llamante**
@@ -64,6 +68,24 @@ decisiones antes de escribir nada:
    bloquea el archivado: quien tenga una suscripción viva conserva el acceso
    hasta que caduque y la clase queda cerrada de hecho. Reabrir en silencio una
    clase restringida a propósito es justo el fallo que se evita.
+
+7. **La Waitlist comprueba la restricción dos veces** (issue #11), calcada de la
+   regla de Session Credit de ADR 0004: al apuntarse y otra vez al promocionar.
+   Entre una cosa y otra el candidato puede haber cambiado de plan o haberse
+   quedado sin suscripción, así que la plaza que se libera no se da por
+   comprobada. El candidato que ya no cualifica se **salta y sale de esa lista**
+   —solo de esa; las demás pueden admitir su plan—, la plaza cae al siguiente y,
+   si no cualifica nadie, **se queda libre** antes que dársela a quien no puede
+   usarla.
+
+   El salto por plan va detrás del salto por límites de reserva, el mismo orden
+   que al inscribirse, y cada motivo arrastra su propia consecuencia: el límite
+   limpia las demás listas del candidato (ya no le caben más reservas en
+   ninguna parte), el plan solo lo saca de esta.
+
+   Esto no contradice la decisión 1: perder la elegibilidad nunca revoca una
+   plaza **ya ocupada**. Un sitio en la lista de espera no es una plaza; es una
+   opción sobre una, y la opción se evalúa al ejercerla.
 
 ## Consecuencias
 
@@ -84,14 +106,7 @@ decisiones antes de escribir nada:
 
 ## Hueco conocido mientras la entrega está a medias
 
-La regla se aplica hoy **solo en la inscripción efectiva**. La **Waitlist** aún
-no la comprueba (ni al apuntarse ni al promocionar): es trabajo del issue #11.
-Hasta que ese issue aterrice, un miembro no elegible que encuentre la clase
-**llena** entra en lista de espera y puede acabar promocionado a una plaza. Es
-consecuencia deliberada del orden de la decisión 4 —el aforo no se tapa— y del
-recorte de alcance, no un descuido.
-
-Del mismo modo, la restricción sobre la **plantilla semanal**
+La restricción sobre la **plantilla semanal**
 (`ScheduleProgrammed`) es del issue #12: pedir planes al crear un schedule con
 `repeat: true` se **rechaza** en vez de aceptarse y tirarse en silencio, que le
 haría creer al administrador que ha restringido la clase.

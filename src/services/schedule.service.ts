@@ -1297,34 +1297,35 @@ export class ScheduleService extends BaseService {
       throw new ValidationError(USER_ALREADY_IN_SCHEDULE);
     }
 
+    // AQUÍ va el descuento de Session Credit cuando se implemente (ADR 0004):
+    // antes que la restricción de planes, para que a quien tiene el plan
+    // correcto pero no créditos se le diga que compre créditos, no que se
+    // cambie de plan. Entrar en waitlist no consume crédito, pero sí exige
+    // tener alguno: el descuento va en la promoción.
+    //
+    // Restricted Schedule: el gate va **después** del estado del schedule, de
+    // los límites de reserva y de la ventana anticipada, para que el rechazo
+    // que oye el miembro nombre el motivo que de verdad aplica y no tape
+    // ninguno de ellos. Sin bypass de admin ni de coach: es una regla, no una
+    // regla por rol.
+    //
+    // Va **antes** de repartir entre plaza y lista de espera (issue #11): el
+    // aforo no es un rechazo del que la restricción pueda tapar nada, es una
+    // bifurcación, y un miembro que nunca podría ocupar la plaza tampoco debe
+    // esperar por ella. Así el mismo error vale para inscribirse y para
+    // apuntarse a la lista.
+    const planAccess = await this.getSchedulePlanAccess(currentUser, schedule);
+
+    if (!planAccess.canRegister) {
+      throw new ValidationError(VAL_ERRORS.PLAN_NOT_ALLOWED_IN_SCHEDULE);
+    }
+
     let message = 'User added to schedule';
     if (isFull) {
-      // La lista de espera todavía NO comprueba la restricción de planes: es
-      // trabajo del issue #11 (apuntarse y promoción). Hasta entonces, un
-      // miembro no elegible puede colarse por una clase llena. Documentado en
-      // ADR 0005 y en CONTEXT.md → Restricted Schedule.
       schedule.waitListUsers.add(user);
       user.waitListSchedules.add(schedule);
       message = 'User added to waitlist';
     } else {
-      // AQUÍ va el descuento de Session Credit cuando se implemente (ADR 0004):
-      // antes que la restricción de planes, para que a quien tiene el plan
-      // correcto pero no créditos se le diga que compre créditos, no que se
-      // cambie de plan.
-      //
-      // Restricted Schedule: el gate va **después** de aforo, límites de
-      // reserva y ventana anticipada, para que el rechazo que oye el miembro
-      // nombre el motivo que de verdad aplica y no tape ninguno de ellos.
-      // Sin bypass de admin ni de coach: es una regla, no una regla por rol.
-      const planAccess = await this.getSchedulePlanAccess(
-        currentUser,
-        schedule
-      );
-
-      if (!planAccess.canRegister) {
-        throw new ValidationError(VAL_ERRORS.PLAN_NOT_ALLOWED_IN_SCHEDULE);
-      }
-
       schedule.users.add(user);
       user.schedules.add(schedule);
       const limitsAfterBooking = this.checkUserBookingLimits(
@@ -1389,11 +1390,36 @@ export class ScheduleService extends BaseService {
       return null;
     }
 
-    const permissionService = new PermissionService(this.em);
-
-    return await permissionService.getUserActiveSubscriptionInCompany(
+    return await this.findLiveSubscriptionForUser(
       currentUser.id,
       currentUser.activeCompanyId
+    );
+  }
+
+  /**
+   * Igual que {@link findLiveSubscription}, pero para un usuario que **no es
+   * el llamante**.
+   *
+   * @remarks Lo necesita la promoción desde la lista de espera: ahí se evalúa
+   * la elegibilidad de un candidato en nombre de nadie, así que no hay
+   * `CurrentUser` del que sacar la empresa y hay que decirla explícitamente
+   * (la del schedule).
+   *
+   * @param userId - Usuario cuya suscripción vigente se busca.
+   * @param companyId - Empresa en la que se busca.
+   * @param em - EntityManager (posiblemente transaccional) a usar.
+   * @returns La suscripción vigente ahora mismo, o `null`.
+   */
+  private async findLiveSubscriptionForUser(
+    userId: string,
+    companyId: string,
+    em: EntityManager = this.em
+  ): Promise<Subscription | null> {
+    const permissionService = new PermissionService(em);
+
+    return await permissionService.getUserActiveSubscriptionInCompany(
+      userId,
+      companyId
     );
   }
 
@@ -1420,6 +1446,25 @@ export class ScheduleService extends BaseService {
     schedule: Schedule,
     resolveLiveSubscription: () => Promise<Subscription | null> = () =>
       this.findLiveSubscription(currentUser)
+  ): Promise<SchedulePlanAccess> {
+    return await this.evaluatePlanAccess(schedule, resolveLiveSubscription);
+  }
+
+  /**
+   * El núcleo de la restricción de planes, sin noción de llamante.
+   *
+   * @remarks `getSchedulePlanAccess` la evalúa para quien hace la petición;
+   * la promoción desde la lista de espera la evalúa para un candidato. La
+   * regla es una sola y vive aquí.
+   *
+   * @param schedule - Schedule sobre el que se evalúa la restricción.
+   * @param resolveLiveSubscription - Cómo obtener la suscripción vigente de la
+   * persona que se evalúa. No se llama si el schedule no está restringido.
+   * @returns Si puede inscribirse, el motivo si no, y los planes exigidos.
+   */
+  private async evaluatePlanAccess(
+    schedule: Schedule,
+    resolveLiveSubscription: () => Promise<Subscription | null>
   ): Promise<SchedulePlanAccess> {
     const requiredPlans = await this.getAllowedPlans(schedule);
 
@@ -1496,6 +1541,8 @@ export class ScheduleService extends BaseService {
           'admin',
           'waitListUsers',
           'waitListUsers.pushTokens',
+          'company',
+          'allowedPlans',
         ],
       }
     );
@@ -2007,6 +2054,35 @@ export class ScheduleService extends BaseService {
   }
 
   /**
+   * ¿Sigue cualificando este candidato de la lista de espera para la plaza que
+   * ha quedado libre? (**Restricted Schedule**, issue #11.)
+   *
+   * @remarks La restricción se comprueba otra vez al promocionar, igual que la
+   * regla de Session Credit de ADR 0004: entre apuntarse y que se libere la
+   * plaza el candidato puede haber cambiado de plan o haberse quedado sin
+   * suscripción. Se evalúa contra la empresa del schedule, no contra ninguna
+   * "empresa activa" — aquí no hay llamante.
+   *
+   * @param schedule - Schedule con la plaza libre.
+   * @param user - Candidato al que le tocaría la plaza.
+   * @param em - EntityManager (posiblemente transaccional) a usar.
+   * @returns `true` si puede ocupar la plaza.
+   */
+  private async isWaitlistCandidateStillEligible(
+    schedule: Schedule,
+    user: User,
+    em: EntityManager
+  ): Promise<boolean> {
+    const access = await this.evaluatePlanAccess(
+      schedule,
+      async () =>
+        await this.findLiveSubscriptionForUser(user.id, schedule.company.id, em)
+    );
+
+    return access.canRegister;
+  }
+
+  /**
    * Promotes the first valid user from the waitlist recursively/iteratively.
    */
   private async promoteNextUser(
@@ -2047,6 +2123,42 @@ export class ScheduleService extends BaseService {
             isMaxUserBookingsTodayReached,
             em
           );
+          em.persist(schedule);
+          em.persist(user);
+          continue;
+        }
+
+        // Restricted Schedule: el candidato que ha dejado de cualificar se
+        // salta y **sale de esta lista** — no de las demás, que pueden estar
+        // sin restringir o admitir su plan. La plaza cae al siguiente; si no
+        // cualifica nadie, se queda libre antes que dársela a quien no puede
+        // usarla. Va detrás de los límites de reserva, como al inscribirse,
+        // para que sea el mismo orden el que decide en ambos sitios.
+        //
+        // El catch de fuera saca al candidato de la lista, que es lo correcto
+        // para un candidato roto pero no para una consulta que ha fallado: un
+        // fallo transitorio echaría a alguien que sí cualifica, y de la lista
+        // no se vuelve. Si no se puede *determinar* la elegibilidad se corta
+        // la promoción y la plaza se queda libre — reversible, a diferencia de
+        // la expulsión.
+        let stillEligible: boolean;
+        try {
+          stillEligible = await this.isWaitlistCandidateStillEligible(
+            schedule,
+            user,
+            em
+          );
+        } catch (error) {
+          console.error(
+            `Could not determine waitlist eligibility for user ${user.id}; leaving the seat free:`,
+            error
+          );
+          break;
+        }
+
+        if (!stillEligible) {
+          schedule.waitListUsers.remove(user);
+          user.waitListSchedules.remove(schedule);
           em.persist(schedule);
           em.persist(user);
           continue;
