@@ -102,6 +102,8 @@ input UpdateScheduleInput {
     maxUsers: Int
     admin: ID
     date: String
+    """Restricted Schedule: omitir deja la restriccion como esta; lista vacia la quita. Los planes deben ser de la empresa del schedule."""
+    allowedPlanIds: [ID!]
 }
 
 input UpdateScheduleProgrammedInput {
@@ -161,6 +163,8 @@ input CreateScheduleInput {
     maxUsers: Int!
     admin: ID!
     date: String
+    """Restricted Schedule: planes que admite el schedule creado. Omitir o lista vacia = abierto. Solo admitido con repeat: false; la restriccion de la plantilla semanal aun no existe y pedirla aqui con repeat: true se rechaza."""
+    allowedPlanIds: [ID!]
 }
 
 input UpdateScheduleOptionsInput {

@@ -1371,11 +1371,13 @@ describe('ScheduleService - getSchedulesRange', () => {
     expect(options.populate).not.toContain('waitListUsers');
     expect(options.strategy).toBe(LoadStrategy.JOINED);
 
-    // Round-trip 2: the second to-many loaded on its own via select-in.
+    // Round-trip 2: the remaining to-many collections loaded on their own via
+    // select-in — including `allowedPlans`, which the per-caller planAccess
+    // resolver reads on every schedule and would otherwise cause an N+1.
     expect(mockEntityManager.populate).toHaveBeenCalledTimes(1);
     const [, populateHint, populateOpts] =
       mockEntityManager.populate.mock.calls[0];
-    expect(populateHint).toEqual(['waitListUsers']);
+    expect(populateHint).toEqual(['waitListUsers', 'allowedPlans']);
     expect(populateOpts.strategy).toBe(LoadStrategy.SELECT_IN);
   });
 

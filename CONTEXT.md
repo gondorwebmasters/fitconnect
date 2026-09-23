@@ -61,6 +61,21 @@ Rules:
 
 Rationale for consuming at booking time and for keeping the subscription alive at 0 credits: [ADR 0004](./docs/adr/0004-session-credits-consumed-at-booking.md).
 
+**Restricted Schedule (Horario Restringido)**:
+A **Schedule** that names a set of **Plans** it admits (`Schedule.allowedPlans`, many-to-many). An **empty set means unrestricted** — open to everyone, which is what every pre-existing schedule is and stays. A member may register only if their **currently live** subscription is to one of the named plans; the plans of the schedule and of the subscription always belong to the same company (tenancy is enforced on the write path by the `companyContext` filter and in the database by a trigger on the pivot table).
+
+Rules:
+- The gate is evaluated **only at registration time**. A booking already made is **never revoked** — not when an administrator adds the restriction to a schedule that already has attendees, not when the member's subscription lapses or switches plan before the class. Removing a non-qualifying member is a manual administrator action (`removeUserFromSchedule`).
+- It is checked against the subscription that is live **now**, not the one that will be live on the class date: a **Future Subscription** to an allowed plan does **not** qualify.
+- It applies to **every role** — there is no administrator or coach bypass, exactly like the **Session Credit** rule. Registration is self-service, so the caller is always the person being registered.
+- It is ordered **after** capacity, booking limits and the advance-booking window (and after the credit check), so the refusal a member sees names the reason that actually applies: a full class still resolves as capacity, and a member who holds the right plan but has no credits is told to buy credits, not to upgrade.
+- Refusal raises the dedicated validation error `PLAN_NOT_ALLOWED_IN_SCHEDULE`, distinct from the capacity, booking-limit and credit ones.
+- The API exposes `Schedule.allowedPlans` (raw, for the backoffice) and `Schedule.planAccess` — a **per-caller** derived field `{ canRegister, reason, requiredPlans }` the mobile app consumes instead of re-implementing the rule. Its scope is this restriction only: it never absorbs capacity, credits or the booking window.
+
+- **Not yet applied to the Waitlist** (issue #11): a non-qualifying member who finds the class *full* still joins the waitlist and may be promoted into a seat. Nor does the **Schedule Programmed** template carry a restriction yet (issue #12) — asking for one while creating a repeating schedule is refused rather than silently dropped.
+
+Rationale for evaluating at booking, for ignoring Future Subscriptions and for the absence of any bypass or eviction: [ADR 0005](./docs/adr/0005-plan-restriction-evaluated-at-booking.md).
+
 **Invariant — CANCELED means the paid period is over**:
 A `CANCELED` subscription never holds a still-live paid period: `CANCELED ⇒ currentPeriodEnd <= now`. This now holds **by construction**, not by convention (see [ADR 0003](./docs/adr/0003-deferred-only-cancellation.md)). There are exactly two live routes into `CANCELED`, both invariant-preserving:
 

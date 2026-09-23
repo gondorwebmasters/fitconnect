@@ -20,6 +20,12 @@ enum ScheduleType {
     competition
 }
 
+"""Motivo por el que el llamante no puede inscribirse en un Restricted Schedule. Cubre SOLO la restriccion de planes: nunca aforo, creditos ni ventana de reserva anticipada."""
+enum SchedulePlanAccessReason {
+    NO_LIVE_SUBSCRIPTION
+    PLAN_NOT_ALLOWED
+}
+
 enum ScheduleState {
     available
     cancelled
