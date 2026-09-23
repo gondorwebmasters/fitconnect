@@ -24,6 +24,18 @@ export enum PaymentType {
   ANUAL = 'anual',
 }
 
+/**
+ * Motivo por el que el llamante no puede inscribirse en un Restricted Schedule.
+ * Cubre **solo** la restricción de planes: nunca aforo, créditos ni ventana de
+ * reserva anticipada. Ver ADR 0005.
+ */
+export enum SchedulePlanAccessReason {
+  /** El schedule restringe planes y el llamante no tiene suscripción vigente. */
+  NO_LIVE_SUBSCRIPTION = 'NO_LIVE_SUBSCRIPTION',
+  /** Tiene suscripción vigente, pero a un plan que el schedule no admite. */
+  PLAN_NOT_ALLOWED = 'PLAN_NOT_ALLOWED',
+}
+
 export enum ScheduleState {
   AVAILABLE = 'available',
   CANCELLED = 'cancelled',

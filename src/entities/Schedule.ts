@@ -14,6 +14,7 @@ import { ValidationError, VAL_ERRORS } from '../utils/errors.util';
 
 import { BaseEntity } from './BaseEntity';
 import { Company } from './Company';
+import { Plan } from './Plan';
 import { ScheduleProgrammed } from './ScheduleProgrammed';
 import { User } from './User';
 
@@ -64,6 +65,22 @@ export class Schedule extends BaseEntity {
 
   @ManyToOne(() => User)
   admin: User;
+
+  /**
+   * Restricted Schedule (Horario Restringido): planes que admite este schedule.
+   * Colección vacía ⇒ sin restricción (abierto a todo el mundo), que es lo que
+   * es y sigue siendo cualquier schedule existente. Se evalúa solo al
+   * inscribirse; una reserva ya hecha nunca se revoca. Ver ADR 0005 y
+   * CONTEXT.md → Restricted Schedule.
+   */
+  @ManyToMany({
+    entity: () => Plan,
+    owner: true,
+    pivotTable: 'schedule_allowed_plans',
+    joinColumn: 'schedule_id',
+    inverseJoinColumn: 'plan_id',
+  })
+  allowedPlans = new Collection<Plan>(this);
 
   @ManyToOne(() => ScheduleProgrammed, { nullable: true })
   scheduleProgrammed?: ScheduleProgrammed;

@@ -1,6 +1,7 @@
 import { EntityManager } from '@mikro-orm/core';
 import moment, { Moment } from 'moment';
 
+import { Plan } from '../entities/Plan';
 import { Schedule } from '../entities/Schedule';
 import { ScheduleProgrammed } from '../entities/ScheduleProgrammed';
 import { User } from '../entities/User';
@@ -25,7 +26,13 @@ export function createDateWithTime(time: string): Date {
 }
 
 /**
- * Crear schedule programado con validaciones y manejo de errores
+ * Crear schedule programado con validaciones y manejo de errores.
+ *
+ * @param data - Datos de la plantilla semanal. `allowedPlans` es su
+ * restricción de planes (**Restricted Schedule**); vacío ⇒ plantilla abierta.
+ * @param context - `em` en el que crearla y usuario que la crea.
+ * @returns La plantilla creada, ya con sus primeros schedules engendrados.
+ * @throws UnauthorizedError | ForbiddenError si el usuario no puede crearla.
  */
 export const createScheduleProgrammed = async (
   {
@@ -38,6 +45,7 @@ export const createScheduleProgrammed = async (
     admin,
     age,
     type,
+    allowedPlans = [],
   }: {
     daysOfWeek: number[];
     startHour: string;
@@ -48,6 +56,8 @@ export const createScheduleProgrammed = async (
     admin: User;
     age: number | null;
     type: ScheduleType;
+    /** Restricted Schedule: planes que admite la plantilla. Vacío ⇒ abierta. */
+    allowedPlans?: Plan[];
   },
   { em, currentUser }: { em: EntityManager; currentUser: CurrentUser }
 ): Promise<ScheduleProgrammed> => {
@@ -75,6 +85,10 @@ export const createScheduleProgrammed = async (
         company: currentUser.activeCompanyId!,
       }
     );
+
+    if (allowedPlans.length) {
+      newScheduleProgrammed.allowedPlans.set(allowedPlans);
+    }
 
     em.persist(newScheduleProgrammed);
     await em.flush();
@@ -138,7 +152,37 @@ export const createInitialSchedules = async (
 };
 
 /**
- * Crear schedule en X semanas a partir de una fecha
+ * Planes que admite un schedule o una plantilla semanal (**Restricted
+ * Schedule**), inicializando la colección si hace falta. Vive aquí, en la capa
+ * baja, para que la plantilla y el schedule lean su restricción por el mismo
+ * sitio; `ScheduleService.getAllowedPlans` delega en ella.
+ *
+ * @param restrictable - Schedule o plantilla semanal.
+ * @returns Los planes admitidos; lista vacía ⇒ sin restricción.
+ */
+export const getAllowedPlansOf = async (
+  restrictable: Schedule | ScheduleProgrammed
+): Promise<Plan[]> => {
+  if (!restrictable.allowedPlans) {
+    return [];
+  }
+  if (!restrictable.allowedPlans.isInitialized()) {
+    await restrictable.allowedPlans.init();
+  }
+  return restrictable.allowedPlans.getItems();
+};
+
+/**
+ * Crear schedule en X semanas a partir de una fecha, sembrando en él la
+ * restricción de planes de su plantilla.
+ *
+ * @param now - Fecha desde la que se cuenta.
+ * @param day - Día de la semana (0 = domingo) del schedule a crear.
+ * @param weeksFromNow - Semanas a sumar; 0 es la semana en curso.
+ * @param scheduleProgrammed - Plantilla que lo engendra.
+ * @param em - EntityManager en el que crearlo.
+ * @returns `true` si lo ha creado, `false` si ya existía o la plantilla no
+ * tiene admin.
  */
 export const createScheduleInXWeeks = async (
   now: Moment,
@@ -205,6 +249,13 @@ export const createScheduleInXWeeks = async (
     scheduleProgrammed,
     company: scheduleProgrammed.company,
   });
+
+  // Restricted Schedule: el schedule nace con la restricción de su plantilla
+  // (issue #12). Plantilla sin restricción ⇒ schedule abierto, como siempre.
+  const allowedPlans = await getAllowedPlansOf(scheduleProgrammed);
+  if (allowedPlans.length) {
+    newSchedule.allowedPlans.set(allowedPlans);
+  }
 
   em.persist(newSchedule);
   return true;

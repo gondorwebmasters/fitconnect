@@ -110,6 +110,17 @@ type Schedule {
     admin: User!
     state: ScheduleState!
     type: ScheduleType!
+    """Restricted Schedule: planes que admite este schedule. Lista vacia = sin restriccion (abierto a todo el mundo)."""
+    allowedPlans: [Plan!]!
+    """Derivado **por llamante**: si el llamante puede ocupar una plaza en lo que respecta a la restriccion de planes, y por que no. canRegister false tambien impide apuntarse a la lista de espera: no se espera por una plaza que no se podria ocupar. Alcance limitado a esa regla: no absorbe aforo, creditos ni ventana de reserva. No cacheable entre usuarios."""
+    planAccess: SchedulePlanAccess!
+}
+
+"""Resultado por llamante del gate de Restricted Schedule. reason es null cuando canRegister es true. requiredPlans esta vacio en un schedule sin restriccion."""
+type SchedulePlanAccess {
+    canRegister: Boolean!
+    reason: SchedulePlanAccessReason
+    requiredPlans: [Plan!]!
 }
 
 type ScheduleResume {
@@ -133,6 +144,7 @@ type ScheduleProgrammed {
     description: String
     age: Int
     type: ScheduleType
+    allowedPlans: [Plan!]!
 }
     
 type ScheduleOptions {

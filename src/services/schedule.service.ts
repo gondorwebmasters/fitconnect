@@ -3,13 +3,19 @@ import { SqlEntityManager } from '@mikro-orm/postgresql';
 import moment from 'moment';
 
 import { Company } from '../entities/Company';
+import { Plan } from '../entities/Plan';
 import { Schedule } from '../entities/Schedule';
 import { ScheduleOptions } from '../entities/ScheduleOptions';
 import { ScheduleProgrammed } from '../entities/ScheduleProgrammed';
 import { Subscription, SubscriptionStatus } from '../entities/Subscription';
 import { User } from '../entities/User';
 import { CurrentUser, ServiceResponse } from '../types/common.type';
-import { ScheduleState, ScheduleType, UserRoleEnum } from '../types/enums';
+import {
+  SchedulePlanAccessReason,
+  ScheduleState,
+  ScheduleType,
+  UserRoleEnum,
+} from '../types/enums';
 import { UpdateScheduleProgrammedProps } from '../types/resolvers';
 import {
   createServiceResponse,
@@ -26,6 +32,7 @@ import {
   createDateWithTime,
   createInitialSchedules,
   createScheduleProgrammed,
+  getAllowedPlansOf,
 } from '../utils/schedules.util';
 
 import { BaseService } from './base.service';
@@ -44,6 +51,7 @@ export type createScheduleDataType = {
   type: ScheduleType;
   repeat: boolean;
   date?: string;
+  allowedPlanIds?: string[];
 };
 
 export type updateScheduleDataType = {
@@ -59,6 +67,18 @@ export type updateScheduleDataType = {
   date?: string;
   startHour?: string;
   endHour?: string;
+  allowedPlanIds?: string[];
+};
+
+/**
+ * Resultado del gate de **Restricted Schedule** para un llamante concreto.
+ * Cubre solo la restricción de planes: ni aforo, ni créditos, ni ventana de
+ * reserva anticipada. Ver ADR 0005.
+ */
+export type SchedulePlanAccess = {
+  canRegister: boolean;
+  reason: SchedulePlanAccessReason | null;
+  requiredPlans: Plan[];
 };
 
 export class ScheduleService extends BaseService {
@@ -84,7 +104,7 @@ export class ScheduleService extends BaseService {
     if (scheduleId) {
       const schedule = await scheduleRepo.findOne(
         { id: scheduleId },
-        { populate: ['admin', 'users', 'waitListUsers'] }
+        { populate: ['admin', 'users', 'waitListUsers', 'allowedPlans'] }
       );
 
       if (!schedule) {
@@ -104,7 +124,7 @@ export class ScheduleService extends BaseService {
 
       const schedules = await scheduleRepo.find(
         { id: { $in: schedulesIds } },
-        { populate: ['admin', 'users', 'waitListUsers'] }
+        { populate: ['admin', 'users', 'waitListUsers', 'allowedPlans'] }
       );
 
       if (!schedules || schedules.length === 0) {
@@ -116,7 +136,7 @@ export class ScheduleService extends BaseService {
 
     // Todos los schedules
     const schedules = await scheduleRepo.findAll({
-      populate: ['admin', 'users', 'waitListUsers'],
+      populate: ['admin', 'users', 'waitListUsers', 'allowedPlans'],
     });
 
     return createServiceResponse(200, 'Schedules found', true, { schedules });
@@ -153,7 +173,7 @@ export class ScheduleService extends BaseService {
     }
 
     const schedules = await scheduleRepo.find(filter, {
-      populate: ['admin', 'users', 'waitListUsers'],
+      populate: ['admin', 'users', 'waitListUsers', 'allowedPlans'],
       orderBy: { startDate: 'ASC' },
     });
 
@@ -337,7 +357,10 @@ export class ScheduleService extends BaseService {
         { populate: ['users', 'admin'], strategy: LoadStrategy.JOINED }
       );
 
-      await this.em.populate(schedules, ['waitListUsers'], {
+      // `allowedPlans` viaja en el mismo select-in: es una tercera to-many y
+      // el resolver por llamante de `planAccess` la mira en cada schedule, así
+      // que traerla en bloque evita un N+1 en la vista de calendario.
+      await this.em.populate(schedules, ['waitListUsers', 'allowedPlans'], {
         strategy: LoadStrategy.SELECT_IN,
       });
 
@@ -620,6 +643,7 @@ export class ScheduleService extends BaseService {
       type,
       admin,
       date,
+      allowedPlanIds,
     } = scheduleData;
     if (!currentUser) {
       throw new UnauthorizedError();
@@ -635,6 +659,9 @@ export class ScheduleService extends BaseService {
         const adminRef = tem.getReference(User, admin);
 
         if (repeat) {
+          // La plantilla semanal lleva la restricción y la siembra en cada
+          // schedule que engendra (issue #12), en vez de obligar al
+          // administrador a re-marcarlos uno a uno cada semana.
           await createScheduleProgrammed(
             {
               daysOfWeek: days,
@@ -646,6 +673,10 @@ export class ScheduleService extends BaseService {
               admin: adminRef,
               age: finalAge,
               type,
+              allowedPlans: await this.resolveAllowedPlans(
+                tem,
+                allowedPlanIds ?? []
+              ),
             },
             { em: tem, currentUser }
           );
@@ -687,6 +718,14 @@ export class ScheduleService extends BaseService {
             company: currentUser.activeCompanyId!,
           });
 
+          // Restricted Schedule: lista vacía u omitida ⇒ schedule abierto, que
+          // es como nace cualquier schedule que no diga lo contrario.
+          if (allowedPlanIds?.length) {
+            newSchedule.allowedPlans.set(
+              await this.resolveAllowedPlans(tem, allowedPlanIds)
+            );
+          }
+
           tem.persist(newSchedule);
           schedules.push(newSchedule);
 
@@ -704,7 +743,8 @@ export class ScheduleService extends BaseService {
       } catch (error: any) {
         if (
           error instanceof ForbiddenError ||
-          error instanceof UnauthorizedError
+          error instanceof UnauthorizedError ||
+          error instanceof ValidationError
         ) {
           throw error;
         }
@@ -733,7 +773,7 @@ export class ScheduleService extends BaseService {
     if (id) {
       const scheduleProgrammed = await scheduleProgrammedRepo.findOne(
         { id },
-        { populate: ['admin'] }
+        { populate: ['admin', 'allowedPlans'] }
       );
       if (!scheduleProgrammed) {
         throw new NotFoundError('ScheduleProgrammed');
@@ -744,7 +784,7 @@ export class ScheduleService extends BaseService {
     }
 
     const schedulesProgrammed = await scheduleProgrammedRepo.findAll({
-      populate: ['admin'],
+      populate: ['admin', 'allowedPlans'],
     });
     return createServiceResponse(200, 'Schedules programmed found', true, {
       schedulesProgrammed,
@@ -860,8 +900,10 @@ export class ScheduleService extends BaseService {
             'schedules',
             'schedules.users',
             'schedules.waitListUsers',
+            'schedules.allowedPlans',
             'admin',
             'company',
+            'allowedPlans',
           ],
         }
       );
@@ -902,6 +944,18 @@ export class ScheduleService extends BaseService {
       if (updateData.age !== undefined) scheduleProgrammed.age = updateData.age;
       if (updateData.admin !== undefined)
         scheduleProgrammed.admin = tem.getReference(User, updateData.admin);
+
+      // Restricted Schedule sobre la plantilla: omitir la lista la deja como
+      // estaba; darla la pisa aquí y, más abajo, en todos los schedules
+      // futuros de los días que se conservan. Se resuelve una sola vez — los
+      // planes son los mismos para la plantilla y para lo que engendra.
+      const allowedPlans =
+        updateData.allowedPlanIds !== undefined
+          ? await this.resolveAllowedPlans(tem, updateData.allowedPlanIds)
+          : null;
+      if (allowedPlans !== null) {
+        scheduleProgrammed.allowedPlans.set(allowedPlans);
+      }
 
       const now = moment();
       const futureSchedules = scheduleProgrammed.schedules
@@ -954,6 +1008,14 @@ export class ScheduleService extends BaseService {
             endHour: updateData.endHour,
           };
           await this.updateSchedule(updateParams, tem);
+
+          // Editar la plantilla pisa la restricción de todo schedule futuro,
+          // haya divergido o no: quien cambia la política en la plantilla la
+          // quiere aplicada ya. Lo pasado no se toca — `futureSchedules` ya
+          // deja fuera los schedules anteriores a ahora.
+          if (allowedPlans !== null) {
+            futureSchedule.allowedPlans.set(allowedPlans);
+          }
         }
       }
 
@@ -992,6 +1054,7 @@ export class ScheduleService extends BaseService {
       date,
       startHour,
       endHour,
+      allowedPlanIds,
     } = scheduleData;
 
     if (!currentUser) {
@@ -1006,7 +1069,15 @@ export class ScheduleService extends BaseService {
       const scheduleRepo = emToUse.getRepository(Schedule);
       const schedule = await scheduleRepo.findOne(
         { id: id },
-        { populate: ['admin', 'users', 'waitListUsers', 'company'] }
+        {
+          populate: [
+            'admin',
+            'users',
+            'waitListUsers',
+            'company',
+            'allowedPlans',
+          ],
+        }
       );
 
       if (!schedule) {
@@ -1068,6 +1139,15 @@ export class ScheduleService extends BaseService {
 
       if (admin !== undefined) {
         schedule.admin = emToUse.getReference(User, admin);
+      }
+
+      // Restricted Schedule: omitir la lista deja la restricción como estaba;
+      // una lista vacía la quita. Cambiarla nunca expulsa a quien ya está
+      // inscrito — no hay barrido ni desalojo (ADR 0005).
+      if (allowedPlanIds !== undefined) {
+        schedule.allowedPlans.set(
+          await this.resolveAllowedPlans(emToUse, allowedPlanIds)
+        );
       }
 
       if (maxUsers !== undefined && maxUsers > oldMaxUsers) {
@@ -1168,7 +1248,7 @@ export class ScheduleService extends BaseService {
     const scheduleRepo = this.em.getRepository(Schedule);
     const schedule = await scheduleRepo.findOne(
       { id: scheduleId },
-      { populate: ['users', 'admin', 'waitListUsers'] }
+      { populate: ['users', 'admin', 'waitListUsers', 'allowedPlans'] }
     );
 
     if (!schedule) {
@@ -1242,12 +1322,33 @@ export class ScheduleService extends BaseService {
       throw new ValidationError(USER_ALREADY_IN_SCHEDULE);
     }
 
+    // Restricted Schedule: el gate va **después** del estado del schedule, de
+    // los límites de reserva y de la ventana anticipada, para que el rechazo
+    // que oye el miembro nombre el motivo que de verdad aplica y no tape
+    // ninguno de ellos. Sin bypass de admin ni de coach: es una regla, no una
+    // regla por rol.
+    //
+    // Va **antes** de repartir entre plaza y lista de espera (issue #11): el
+    // aforo no es un rechazo del que la restricción pueda tapar nada, es una
+    // bifurcación, y un miembro que nunca podría ocupar la plaza tampoco debe
+    // esperar por ella. Así el mismo error vale para inscribirse y para
+    // apuntarse a la lista.
+    //
+    // Va también **antes** del Session Credit (ADR 0004): a quien no tiene el
+    // plan admitido, decirle que compre créditos no le sirve de nada — el
+    // crédito no le abriría la puerta. El motivo accionable es el plan.
+    const planAccess = await this.getSchedulePlanAccess(currentUser, schedule);
+
+    if (!planAccess.canRegister) {
+      throw new ValidationError(VAL_ERRORS.PLAN_NOT_ALLOWED_IN_SCHEDULE);
+    }
+
     let message = 'User added to schedule';
     if (isFull) {
       // Waitlist: entrar no consume, pero exige ≥ 1 crédito disponible; el
       // crédito se descuenta al promocionar (ADR 0004). Igual para todos los
       // roles, como el consumo en reserva real.
-      const subscription = await this.findLiveSubscription(
+      const subscription = await this.findLiveSubscriptionForUser(
         user.id,
         currentUser.activeCompanyId
       );
@@ -1267,7 +1368,7 @@ export class ScheduleService extends BaseService {
       // en la M:N van en la misma transacción para no gastar un crédito sin
       // plaza (ni al revés).
       await this.em.transactional(async tem => {
-        const subscription = await this.findLiveSubscription(
+        const subscription = await this.findLiveSubscriptionForUser(
           user.id,
           currentUser.activeCompanyId,
           tem
@@ -1312,6 +1413,180 @@ export class ScheduleService extends BaseService {
   }
 
   /**
+   * Planes que admite un schedule o una plantilla semanal (**Restricted
+   * Schedule**). Inicializa la colección si hace falta.
+   *
+   * @param schedule - Schedule o Schedule Programmed del que se quiere la
+   * restricción.
+   * @returns Los planes admitidos; lista vacía ⇒ sin restricción.
+   */
+  public async getAllowedPlans(
+    schedule: Schedule | ScheduleProgrammed
+  ): Promise<Plan[]> {
+    return await getAllowedPlansOf(schedule);
+  }
+
+  /**
+   * Suscripciones **vigentes ahora mismo** del llamante en su empresa activa.
+   *
+   * @remarks Misma noción de "suscripción vigente" que usan login y
+   * `hasActive` (ver {@link findLiveSubscriptionForUser}). Una Suscripción
+   * Futura (periodo aún no empezado) no cuenta, aunque vaya a estar vigente el
+   * día de la clase — el gate mira el ahora, no la fecha de la clase (ADR 0005).
+   *
+   * @param currentUser - Llamante autenticado.
+   * @returns La suscripción vigente, o `null` si no hay ninguna.
+   */
+  public async findLiveSubscription(
+    currentUser: CurrentUser
+  ): Promise<Subscription | null> {
+    if (!currentUser?.id || !currentUser.activeCompanyId) {
+      return null;
+    }
+
+    return await this.findLiveSubscriptionForUser(
+      currentUser.id,
+      currentUser.activeCompanyId
+    );
+  }
+
+  /**
+   * Igual que {@link findLiveSubscription}, pero para un usuario que **no es
+   * el llamante**, y la **única** consulta de "suscripción vigente" del
+   * servicio: la usan tanto la restricción de planes (ADR 0005) como el
+   * consumo y reembolso de Session Credits (ADR 0004).
+   *
+   * @remarks Misma definición que la consulta de suscripción activa de
+   * `PermissionService` (ACTIVE/TRIALING y periodo en curso), reproducida aquí
+   * porque hace falta poder pasar un `EntityManager` transaccional y tolerar
+   * que no haya empresa. No popula `plan`: la restricción solo compara ids.
+   * Con `companyId` explícito se salta el filtro `companyContext` para no
+   * depender del header de la request; sin él se deja actuar al filtro.
+   *
+   * @param userId - Usuario cuya suscripción vigente se busca.
+   * @param companyId - Empresa en la que se busca.
+   * @param em - EntityManager (posiblemente transaccional) a usar.
+   * @returns La suscripción vigente ahora mismo, o `null`.
+   */
+  private async findLiveSubscriptionForUser(
+    userId: string,
+    companyId: string | undefined,
+    em: EntityManager = this.em
+  ): Promise<Subscription | null> {
+    const now = new Date();
+    return em.findOne(
+      Subscription,
+      {
+        user: userId,
+        ...(companyId ? { company: companyId } : {}),
+        status: {
+          $in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING],
+        },
+        currentPeriodStart: { $lte: now },
+        currentPeriodEnd: { $gte: now },
+      },
+      companyId ? { filters: false } : {}
+    );
+  }
+
+  /**
+   * ¿Puede este llamante inscribirse en este schedule, en lo que respecta a la
+   * restricción de planes?
+   *
+   * @remarks Es la **única** implementación de la regla: los fronts la consumen
+   * por GraphQL (`Schedule.planAccess`) en vez de recomputarla (ADR 0005).
+   * Aplica a todos los roles: no hay bypass de admin ni de coach, igual que la
+   * regla de Session Credit de ADR 0004.
+   *
+   * @param currentUser - Llamante que quiere inscribirse.
+   * @param schedule - Schedule sobre el que se evalúa la restricción.
+   * @param resolveLiveSubscription - Cómo obtener la suscripción vigente del
+   * llamante. Por defecto la consulta; un resolver que evalúa muchos schedules
+   * del mismo llamante pasa aquí una versión memorizada, porque estos
+   * resolvers están limitados por latencia y la suscripción es la misma para
+   * toda la petición.
+   * @returns Si puede inscribirse, el motivo si no, y los planes exigidos.
+   */
+  public async getSchedulePlanAccess(
+    currentUser: CurrentUser,
+    schedule: Schedule,
+    resolveLiveSubscription: () => Promise<Subscription | null> = () =>
+      this.findLiveSubscription(currentUser)
+  ): Promise<SchedulePlanAccess> {
+    return await this.evaluatePlanAccess(schedule, resolveLiveSubscription);
+  }
+
+  /**
+   * El núcleo de la restricción de planes, sin noción de llamante.
+   *
+   * @remarks `getSchedulePlanAccess` la evalúa para quien hace la petición;
+   * la promoción desde la lista de espera la evalúa para un candidato. La
+   * regla es una sola y vive aquí.
+   *
+   * @param schedule - Schedule sobre el que se evalúa la restricción.
+   * @param resolveLiveSubscription - Cómo obtener la suscripción vigente de la
+   * persona que se evalúa. No se llama si el schedule no está restringido.
+   * @returns Si puede inscribirse, el motivo si no, y los planes exigidos.
+   */
+  private async evaluatePlanAccess(
+    schedule: Schedule,
+    resolveLiveSubscription: () => Promise<Subscription | null>
+  ): Promise<SchedulePlanAccess> {
+    const requiredPlans = await this.getAllowedPlans(schedule);
+
+    if (requiredPlans.length === 0) {
+      return { canRegister: true, reason: null, requiredPlans: [] };
+    }
+
+    const subscription = await resolveLiveSubscription();
+
+    if (!subscription) {
+      return {
+        canRegister: false,
+        reason: SchedulePlanAccessReason.NO_LIVE_SUBSCRIPTION,
+        requiredPlans,
+      };
+    }
+
+    const livePlanId = (subscription.plan as Plan | undefined)?.id;
+    const isAllowed = requiredPlans.some(plan => plan.id === livePlanId);
+
+    return {
+      canRegister: isAllowed,
+      reason: isAllowed ? null : SchedulePlanAccessReason.PLAN_NOT_ALLOWED,
+      requiredPlans,
+    };
+  }
+
+  /**
+   * Resuelve ids de plan a entidades de la empresa activa.
+   *
+   * @remarks Usa `find()`, así que el filtro `companyContext` se aplica solo:
+   * un plan de otra empresa sencillamente no aparece.
+   *
+   * @param emToUse - EntityManager (posiblemente transaccional) a usar.
+   * @param allowedPlanIds - Ids de plan pedidos por el llamante.
+   * @returns Los planes correspondientes, en el mismo orden que los devuelva la query.
+   * @throws {ValidationError} Si algún id no es un plan de esta empresa.
+   */
+  private async resolveAllowedPlans(
+    emToUse: EntityManager,
+    allowedPlanIds: string[]
+  ): Promise<Plan[]> {
+    if (allowedPlanIds.length === 0) {
+      return [];
+    }
+
+    const plans = await emToUse.find(Plan, { id: { $in: allowedPlanIds } });
+
+    if (plans.length !== new Set(allowedPlanIds).size) {
+      throw new ValidationError(VAL_ERRORS.PLAN_NOT_IN_COMPANY);
+    }
+
+    return plans;
+  }
+
+  /**
    * Remover usuario de schedule
    */
   public async removeUserFromSchedule(
@@ -1332,6 +1607,8 @@ export class ScheduleService extends BaseService {
           'admin',
           'waitListUsers',
           'waitListUsers.pushTokens',
+          'company',
+          'allowedPlans',
         ],
       }
     );
@@ -1384,7 +1661,7 @@ export class ScheduleService extends BaseService {
         // que devolver.
         const isBeforeStart = moment().isBefore(Number(schedule.startDate));
         if (isBeforeStart) {
-          const subscription = await this.findLiveSubscription(
+          const subscription = await this.findLiveSubscriptionForUser(
             user.id,
             currentUser.activeCompanyId,
             tem
@@ -1583,8 +1860,7 @@ export class ScheduleService extends BaseService {
       // schedule ya estaba CANCELLED el reembolso ya se hizo entonces — no se
       // devuelve dos veces. La waitlist nunca consumió: nada que devolver.
       const refunded =
-        schedule.users.length > 0 &&
-        schedule.state !== ScheduleState.CANCELLED;
+        schedule.users.length > 0 && schedule.state !== ScheduleState.CANCELLED;
       if (refunded) {
         await this.refundScheduleCredits(schedule, currentUser.id, tem);
       }
@@ -1872,34 +2148,6 @@ export class ScheduleService extends BaseService {
   // ═══════════════════════════════════════════
 
   /**
-   * Suscripción vigente ahora mismo del usuario en la empresa activa, o null.
-   * Misma definición que la consulta de suscripción activa del
-   * PermissionService (ACTIVE/TRIALING y periodo en curso). Con companyId explícito se salta el
-   * filtro `companyContext` para no depender del header de la request; sin él
-   * se deja actuar al filtro.
-   */
-  private async findLiveSubscription(
-    userId: string,
-    companyId: string | undefined,
-    em: EntityManager = this.em
-  ): Promise<Subscription | null> {
-    const now = new Date();
-    return em.findOne(
-      Subscription,
-      {
-        user: userId,
-        ...(companyId ? { company: companyId } : {}),
-        status: {
-          $in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING],
-        },
-        currentPeriodStart: { $lte: now },
-        currentPeriodEnd: { $gte: now },
-      },
-      companyId ? { filters: false } : {}
-    );
-  }
-
-  /**
    * Lectura no atómica: solo sirve de puerta (p.ej. entrar en waitlist). La
    * garantía real la da el UPDATE condicional de consumeSessionCredit.
    * Ilimitada (creditsTotal null) ⇒ siempre true.
@@ -2051,7 +2299,7 @@ export class ScheduleService extends BaseService {
   ): Promise<void> {
     const companyId = schedule.company?.id;
     for (const user of schedule.users.getItems()) {
-      const subscription = await this.findLiveSubscription(
+      const subscription = await this.findLiveSubscriptionForUser(
         user.id,
         companyId,
         em
@@ -2129,6 +2377,35 @@ export class ScheduleService extends BaseService {
   }
 
   /**
+   * ¿Sigue cualificando este candidato de la lista de espera para la plaza que
+   * ha quedado libre? (**Restricted Schedule**, issue #11.)
+   *
+   * @remarks La restricción se comprueba otra vez al promocionar, igual que la
+   * regla de Session Credit de ADR 0004: entre apuntarse y que se libere la
+   * plaza el candidato puede haber cambiado de plan o haberse quedado sin
+   * suscripción. Se evalúa contra la empresa del schedule, no contra ninguna
+   * "empresa activa" — aquí no hay llamante.
+   *
+   * @param schedule - Schedule con la plaza libre.
+   * @param user - Candidato al que le tocaría la plaza.
+   * @param em - EntityManager (posiblemente transaccional) a usar.
+   * @returns `true` si puede ocupar la plaza.
+   */
+  private async isWaitlistCandidateStillEligible(
+    schedule: Schedule,
+    user: User,
+    em: EntityManager
+  ): Promise<boolean> {
+    const access = await this.evaluatePlanAccess(
+      schedule,
+      async () =>
+        await this.findLiveSubscriptionForUser(user.id, schedule.company.id, em)
+    );
+
+    return access.canRegister;
+  }
+
+  /**
    * Promotes the first valid user from the waitlist recursively/iteratively.
    *
    * Session Credits (ADR 0004): el crédito se consume aquí, al promocionar,
@@ -2182,7 +2459,43 @@ export class ScheduleService extends BaseService {
           continue;
         }
 
-        const subscription = await this.findLiveSubscription(
+        // Restricted Schedule (ADR 0005): el candidato que ha dejado de
+        // cualificar se salta y **sale de esta lista** — no de las demás, que
+        // pueden estar sin restringir o admitir su plan. La plaza cae al
+        // siguiente; si no cualifica nadie, se queda libre antes que dársela a
+        // quien no puede usarla. Va detrás de los límites de reserva y delante
+        // del crédito, exactamente el mismo orden que al inscribirse.
+        //
+        // El catch de fuera saca al candidato de la lista, que es lo correcto
+        // para un candidato roto pero no para una consulta que ha fallado: un
+        // fallo transitorio echaría a alguien que sí cualifica, y de la lista
+        // no se vuelve. Si no se puede *determinar* la elegibilidad se corta
+        // la promoción y la plaza se queda libre — reversible, a diferencia de
+        // la expulsión.
+        let stillEligible: boolean;
+        try {
+          stillEligible = await this.isWaitlistCandidateStillEligible(
+            schedule,
+            user,
+            em
+          );
+        } catch (error) {
+          console.error(
+            `Could not determine waitlist eligibility for user ${user.id}; leaving the seat free:`,
+            error
+          );
+          break;
+        }
+
+        if (!stillEligible) {
+          this.dropFromWaitlist(schedule, user, em);
+          continue;
+        }
+
+        // Session Credit (ADR 0004): se consume aquí, no al entrar en la
+        // lista. Sin créditos el candidato también sale y se prueba el
+        // siguiente.
+        const subscription = await this.findLiveSubscriptionForUser(
           user.id,
           schedule.company?.id,
           em

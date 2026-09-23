@@ -1,6 +1,9 @@
 import { IResolvers } from '@graphql-tools/utils';
 import dotenv from 'dotenv';
 
+import { Schedule } from '../../entities/Schedule';
+import { ScheduleProgrammed } from '../../entities/ScheduleProgrammed';
+import { Subscription } from '../../entities/Subscription';
 import {
   createScheduleDataType,
   ScheduleService,
@@ -30,6 +33,61 @@ import { schedulesPermissions } from '../../utils/permissions';
 import { withPermissions } from '../middlewares/permissions';
 
 dotenv.config();
+
+// ===== FIELD RESOLVERS (Schedule) =====
+
+/**
+ * `Schedule.planAccess` es derivado **por llamante**, así que una lista de N
+ * schedules restringidos resolvería N veces la misma suscripción. El `context`
+ * vive exactamente lo que la petición: memorizamos ahí la promesa y todos los
+ * schedules de esa petición comparten una sola consulta.
+ *
+ * @param context - Contexto de la petición GraphQL.
+ * @param scheduleService - Servicio que sabe resolver la suscripción vigente.
+ * @returns La suscripción vigente del llamante, o `null` si no tiene.
+ */
+const getLiveSubscription = (
+  context: ContextProps,
+  scheduleService: ScheduleService
+): Promise<Subscription | null> => {
+  context.liveSubscription ??= scheduleService.findLiveSubscription(
+    context.currentUser
+  );
+
+  return context.liveSubscription;
+};
+
+/**
+ * @returns Los planes que admite el schedule o la plantilla semanal; lista
+ * vacía ⇒ sin restricción.
+ */
+const allowedPlans = async (
+  restrictable: Schedule | ScheduleProgrammed,
+  _: any,
+  context: ContextProps
+) => {
+  const scheduleService = new ScheduleService(context.em);
+
+  return await scheduleService.getAllowedPlans(restrictable);
+};
+
+/**
+ * @returns Si el llamante puede inscribirse en lo que respecta a la
+ * restricción de planes, el motivo si no, y los planes exigidos.
+ */
+const planAccess = async (
+  schedule: Schedule,
+  _: any,
+  context: ContextProps
+) => {
+  const scheduleService = new ScheduleService(context.em);
+
+  return await scheduleService.getSchedulePlanAccess(
+    context.currentUser,
+    schedule,
+    () => getLiveSubscription(context, scheduleService)
+  );
+};
 
 // ===== QUERY RESOLVERS =====
 
@@ -466,6 +524,13 @@ export const scheduleResolvers: IResolvers = {
       schedulesPermissions.READ,
       getSchedulesProgrammed
     ),
+  },
+  Schedule: {
+    allowedPlans,
+    planAccess,
+  },
+  ScheduleProgrammed: {
+    allowedPlans,
   },
   Mutation: {
     createSchedule: withPermissions(

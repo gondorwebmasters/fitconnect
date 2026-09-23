@@ -11,6 +11,10 @@ export const VAL_ERRORS = {
   ADVANCE_BOOKING_OUTSIDE_WINDOW:
     'Schedule is outside the advance booking window',
   USER_ALREADY_IN_SCHEDULE: 'User is already registered for this schedule',
+  PLAN_NOT_ALLOWED_IN_SCHEDULE:
+    'Your current plan does not allow registering for this schedule',
+  PLAN_NOT_IN_COMPANY:
+    'One or more of the selected plans do not belong to this company',
   INCORRECT_PASSWORD: 'Current password is incorrect',
   SCHEDULE_HAS_USERS:
     'Cannot delete schedule because it has registered or waitlisted users',

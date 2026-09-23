@@ -1,5 +1,6 @@
 import { EntityManager } from '@mikro-orm/postgresql';
 
+import { Subscription } from '../entities/Subscription';
 import { User } from '../entities/User';
 import { PaymentProcessor } from '../services/payment-processor.interface';
 
@@ -10,6 +11,11 @@ export type ContextProps = {
   em: EntityManager;
   currentUser: CurrentUser;
   paymentProcessor: PaymentProcessor;
+  /**
+   * Memo por petición de la suscripción vigente del llamante, para que el
+   * campo derivado `Schedule.planAccess` no la consulte una vez por schedule.
+   */
+  liveSubscription?: Promise<Subscription | null>;
 };
 
 export type UserProps = {
@@ -85,6 +91,7 @@ export type ScheduleProps = {
     maxUsers: number;
     admin: string;
     date?: string;
+    allowedPlanIds?: string[];
   };
 };
 
@@ -123,6 +130,7 @@ export type UpdateScheduleProps = {
     date?: string;
     startHour?: string;
     endHour?: string;
+    allowedPlanIds?: string[];
   };
 };
 
@@ -138,6 +146,7 @@ export type UpdateScheduleProgrammedProps = {
     description?: string;
     type?: ScheduleType;
     age?: number | null;
+    allowedPlanIds?: string[];
   };
 };
 

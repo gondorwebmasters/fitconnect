@@ -8,24 +8,8 @@ Domain glossary and terms for the Fitconnect backend system.
 A planned session or class at a gym/company, which has a specific capacity (maximum users) and an assigned administrator.
 Deleting a schedule that still has registered users is treated as a **gym-side cancellation**: every registered member with a Session Pack gets their credit back (unless the schedule was already _cancelled_, in which case the refund already happened) and the members are notified, then the schedule is physically deleted. The preferred route for a class that will not take place is still to _cancel_ it (deactivated but preserved in history); deletion is for schedules created by mistake. Past schedules are also preserved and never deleted automatically when their recurring template (Schedule Programmed) is removed.
 
-**Restricted Schedule (Horario Restringido)**:
-A **Schedule** that carries a non-empty set of **Plans** (`allowedPlans`) and admits only members whose subscription is to one of them. An **empty set means no restriction** — the schedule is open to every member. The restriction is a *set*, not a single plan: the singular case ("only Premium") is a set of one.
-
-Rules:
-- **Evaluated only at registration time.** The gate asks: does this member have a *currently live* subscription (`hasActive`) whose plan is in `allowedPlans`? A **Future Subscription** to the required plan does **not** qualify, even if it will have started by the time the class takes place — the check is about now, not about the class date.
-- **A booking already made is firm.** Nothing revokes it: not the administrator restricting the schedule afterwards, not the member's subscription expiring or switching to another plan before the class. Same principle as reaching 0 **Session Credits** (see [ADR 0004](./docs/adr/0004-session-credits-consumed-at-booking.md)) — losing eligibility blocks *new* registrations, it never evicts. An administrator who wants a non-qualifying member out removes them by hand.
-- **Waitlist is checked twice**: on joining (so nobody waits for a seat they could never take) and again on promotion (eligibility may have lapsed in between). A candidate who no longer qualifies is skipped and dropped from that waitlist, the next one is tried, and if nobody can take it the seat stays free — identical to the out-of-credits rule.
-- **No role bypass.** The restriction applies to members, coaches and administrators alike; an administrator registering themselves on a Premium-only schedule without a live Premium subscription is refused. This follows from registration being self-service only (`addUserToSchedule` takes a schedule, never a target user) and matches the credit rule in ADR 0004.
-- **A restricted plan may still be archived.** Archiving a Plan that schedules require is permitted and warns the administrator how many schedules reference it. Those schedules become closed in practice — members holding a live subscription keep access until it lapses, and no new member can ever qualify. The restriction is **never silently dropped**: quietly reopening a restricted class would be a silent access failure.
-
-**Restriction on the template**: `ScheduleProgrammed` carries `allowedPlans` too, and seeds it into the Schedules it spawns. An individual Schedule may diverge afterwards, but **editing the template overwrites every future Schedule**, exactly as it already does for `title`, `maxUsers`, `type`, `age` and `admin`.
-
-**Exposure**: the API exposes both `allowedPlans` (the backoffice needs it to edit the restriction) and a per-user derived field saying whether the caller may register and why not (the mobile front needs it so the access rule lives in the back only). The derived field covers *this* restriction alone — capacity, credits and the booking window keep their own signals, so it does not become a catch-all.
-
-Rationale for evaluating only at registration and never evicting: [ADR 0005](./docs/adr/0005-plan-restriction-evaluated-at-booking.md).
-
 **Schedule Programmed (Programación Semanal)**:
-A weekly recurring template that defines the days of the week, hours, capacity, and administrator (coach) for a type of session. It serves as the baseline to automatically spawn individual Schedule instances for future weeks.
+A weekly recurring template that defines the days of the week, hours, capacity, administrator (coach) and — see **Restricted Schedule** — the admitted plans for a type of session. It serves as the baseline to automatically spawn individual Schedule instances for future weeks.
 
 **Schedule Options**:
 Settings configured per company/gym that dictate rules for booking, capacity requirements, and administrative warnings.
@@ -76,6 +60,23 @@ Rules:
 - **Plan changes** (`changePlan`, prorated) are not allowed into or out of a Session Pack; the route is deferred cancellation + a **Future Subscription** with the new pack.
 
 Rationale for consuming at booking time and for keeping the subscription alive at 0 credits: [ADR 0004](./docs/adr/0004-session-credits-consumed-at-booking.md).
+
+**Restricted Schedule (Horario Restringido)**:
+A **Schedule** that names a set of **Plans** it admits (`Schedule.allowedPlans`, many-to-many). An **empty set means unrestricted** — open to everyone, which is what every pre-existing schedule is and stays. A member may register only if their **currently live** subscription is to one of the named plans; the plans of the schedule and of the subscription always belong to the same company (tenancy is enforced on the write path by the `companyContext` filter and in the database by a trigger on the pivot table).
+
+Rules:
+- The gate is evaluated **only at registration time**. A booking already made is **never revoked** — not when an administrator adds the restriction to a schedule that already has attendees, not when the member's subscription lapses or switches plan before the class. Removing a non-qualifying member is a manual administrator action (`removeUserFromSchedule`).
+- It is checked against the subscription that is live **now**, not the one that will be live on the class date: a **Future Subscription** to an allowed plan does **not** qualify.
+- It applies to **every role** — there is no administrator or coach bypass, exactly like the **Session Credit** rule. Registration is self-service, so the caller is always the person being registered.
+- It is ordered **after** booking limits and the advance-booking window but **before** the **Session Credit** check, so the refusal a member sees names the reason that actually applies: telling a member without the admitted plan to buy credits would be useless, since the credit would not open the door either. Capacity is not one of those reasons — it is not a refusal but a fork between a seat and the waitlist, and the gate is evaluated **before** that fork.
+- Refusal raises the dedicated validation error `PLAN_NOT_ALLOWED_IN_SCHEDULE`, distinct from the capacity, booking-limit and credit ones.
+- The API exposes `Schedule.allowedPlans` (raw, for the backoffice) and `Schedule.planAccess` — a **per-caller** derived field `{ canRegister, reason, requiredPlans }` the mobile app consumes instead of re-implementing the rule. Its scope is this restriction only: it never absorbs capacity, credits or the booking window.
+
+- It applies to the **Waitlist** too, checked twice — on joining and again on promotion — exactly like the **Session Credit** rule. A non-qualifying member is refused when joining, with the same error. On promotion a candidate who has lost eligibility is skipped and dropped from **that** waitlist only; the seat falls through to the next eligible candidate, and if nobody qualifies it is left free. A place already held is never revoked: a waitlist slot is an option on a seat, evaluated when exercised.
+- **A restricted plan may still be archived.** Archiving a Plan that schedules require is permitted and warns the administrator how many schedules reference it. Those schedules become closed in practice — members holding a live subscription keep access until it lapses, and no new member can ever qualify. The restriction is **never silently dropped**: quietly reopening a restricted class would be a silent access failure.
+- The **Schedule Programmed** template carries the same restriction (`ScheduleProgrammed.allowedPlans`, with the same tenancy trigger) and **seeds** it into every schedule it spawns, so an administrator configures it once instead of re-marking each week's instances. An individual schedule may diverge afterwards, but **editing the template overwrites the restriction on every future schedule of the days it keeps** — exactly as it already does for title, description, capacity, type and coach. Past schedules are never touched; omitting `allowedPlanIds` on the template update leaves every divergence alone.
+
+Rationale for evaluating at booking, for ignoring Future Subscriptions and for the absence of any bypass or eviction: [ADR 0005](./docs/adr/0005-plan-restriction-evaluated-at-booking.md).
 
 **Invariant — CANCELED means the paid period is over**:
 A `CANCELED` subscription never holds a still-live paid period: `CANCELED ⇒ currentPeriodEnd <= now`. This now holds **by construction**, not by convention (see [ADR 0003](./docs/adr/0003-deferred-only-cancellation.md)). There are exactly two live routes into `CANCELED`, both invariant-preserving:
