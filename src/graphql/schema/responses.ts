@@ -270,6 +270,8 @@ type PlanResponse implements BasicResponse {
     message: String!
     plan: Plan
     plans: [Plan]
+    """Solo lo devuelve archivePlan: cuantos horarios exigian el plan al archivarlo. Se informa, no se bloquea (ADR 0005)."""
+    requiredBySchedules: PlanScheduleRequirement
 }
 
 type SubscriptionHistoryEntry {

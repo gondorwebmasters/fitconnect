@@ -1,7 +1,10 @@
 import { EntityManager, FilterQuery, QueryOrder } from '@mikro-orm/core';
 
 import { Plan, PlanInterval, PlanStatus } from '../entities/Plan';
+import { Schedule } from '../entities/Schedule';
+import { ScheduleProgrammed } from '../entities/ScheduleProgrammed';
 import { ServiceResponse } from '../types/common.type';
+import { ScheduleState } from '../types/enums';
 import {
   BadRequestError,
   BAD_REQUEST_ERRORS,
@@ -39,6 +42,18 @@ export interface UpdatePlanInput {
   metadata?: Record<string, any>;
   status?: PlanStatus;
   isActive?: boolean;
+}
+
+/**
+ * Cuántos horarios exigen un plan (Restricted Schedule). `scheduleCount`
+ * cuenta solo los horarios que quedan por delante y no están cancelados —los
+ * pasados ya no admiten a nadie—, y `scheduleProgrammedCount` las plantillas
+ * semanales, que seguirían sembrando la restricción cada semana.
+ */
+export interface PlanScheduleRequirement {
+  scheduleCount: number;
+  scheduleProgrammedCount: number;
+  total: number;
 }
 
 export class PlanService extends BaseService {
@@ -311,13 +326,52 @@ export class PlanService extends BaseService {
       throw new NotFoundError('Plan');
     }
 
+    // Se cuenta antes de archivar, que es el estado del que se avisa. El
+    // recuento no decide nada: archivar nunca se rechaza por él (ADR 0005).
+    const requiredBySchedules = await this.countSchedulesRequiringPlan(planId);
+
     plan.isActive = false;
     plan.status = PlanStatus.ARCHIVED;
     await this.em.flush();
 
     return createServiceResponse(200, 'Plan archived successfully', true, {
       plan,
+      requiredBySchedules,
     });
+  }
+
+  /**
+   * Cuenta los horarios y plantillas semanales que exigen este plan
+   * (Restricted Schedule, ADR 0005).
+   *
+   * @remarks Es informativo: alimenta el aviso con el que el administrador
+   * confirma el archivado. Archivar no se bloquea nunca y la restricción no se
+   * retira sola, así que el recuento sigue siendo el mismo después de
+   * archivar. Se usa `count()`, no SQL crudo, para que el filtro
+   * `companyContext` siga aplicando.
+   *
+   * @param planId - Plan por el que se pregunta.
+   * @returns Horarios futuros vivos, plantillas semanales, y la suma.
+   */
+  async countSchedulesRequiringPlan(
+    planId: string
+  ): Promise<PlanScheduleRequirement> {
+    const [scheduleCount, scheduleProgrammedCount] = await Promise.all([
+      this.em.count(Schedule, {
+        allowedPlans: planId,
+        startDate: { $gte: new Date() },
+        state: { $ne: ScheduleState.CANCELLED },
+      } as FilterQuery<Schedule>),
+      this.em.count(ScheduleProgrammed, {
+        allowedPlans: planId,
+      } as FilterQuery<ScheduleProgrammed>),
+    ]);
+
+    return {
+      scheduleCount,
+      scheduleProgrammedCount,
+      total: scheduleCount + scheduleProgrammedCount,
+    };
   }
 
   /**

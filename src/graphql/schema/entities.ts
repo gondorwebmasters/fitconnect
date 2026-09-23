@@ -264,6 +264,15 @@ type Plan {
     features: [String]
     subscriptions: [Subscription]
     metadata: JSON
+    """Restricted Schedule: cuantos horarios exigen este plan. Informativo — archivar el plan nunca se bloquea por esto ni retira la restriccion (ADR 0005); sirve para avisar al administrador antes de que confirme."""
+    requiredBySchedules: PlanScheduleRequirement!
+}
+
+"""Horarios que exigen un plan. scheduleCount cuenta solo los horarios futuros no cancelados; scheduleProgrammedCount, las plantillas semanales que seguirian sembrando la restriccion."""
+type PlanScheduleRequirement {
+    scheduleCount: Int!
+    scheduleProgrammedCount: Int!
+    total: Int!
 }
 
 """

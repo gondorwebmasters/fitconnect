@@ -291,6 +291,54 @@ describe('ScheduleService — Restricted Schedule (plan restriction)', () => {
     });
   });
 
+  describe('addUserToSchedule — after the required plan is archived', () => {
+    /**
+     * Archivar un plan no toca la restriccion ni las suscripciones vivas
+     * (issue #13, ADR 0005): el horario queda cerrado *de facto*, no cerrado
+     * de golpe. El gate compara planes, no su estado, asi que archivar no
+     * puede cambiar la respuesta de quien ya tiene el plan vivo.
+     */
+    const ARCHIVED_PREMIUM: any = {
+      ...PREMIUM_PLAN,
+      status: 'archived',
+      isActive: false,
+    };
+
+    it('should still register a member whose live subscription is to the archived plan', async () => {
+      restrictTo(ARCHIVED_PREMIUM);
+      subscriptions = [liveSubscription(ARCHIVED_PREMIUM)];
+
+      const response = await scheduleService.addUserToSchedule(
+        buildCurrentUser(),
+        'sch-1'
+      );
+
+      expect(response.success).toBe(true);
+      expect(schedule.users.getItems()).toHaveLength(1);
+    });
+
+    it('should still refuse a member without a live subscription to the archived plan', async () => {
+      restrictTo(ARCHIVED_PREMIUM);
+      subscriptions = [liveSubscription(BASIC_PLAN)];
+
+      await expect(
+        scheduleService.addUserToSchedule(buildCurrentUser(), 'sch-1')
+      ).rejects.toThrow(VAL_ERRORS.PLAN_NOT_ALLOWED_IN_SCHEDULE);
+
+      expect(schedule.users.getItems()).toHaveLength(0);
+    });
+
+    it('should keep the restriction on the schedule — archiving never detaches it', async () => {
+      restrictTo(ARCHIVED_PREMIUM);
+
+      await expect(
+        scheduleService.addUserToSchedule(buildCurrentUser(), 'sch-1')
+      ).rejects.toThrow(VAL_ERRORS.PLAN_NOT_ALLOWED_IN_SCHEDULE);
+
+      expect(schedule.allowedPlans.getItems()).toEqual([ARCHIVED_PREMIUM]);
+    });
+  });
+
   describe('addUserToSchedule — ordering against the other refusals', () => {
     it('should report the booking-limit refusal when the member is also non-qualifying', async () => {
       restrictTo(PREMIUM_PLAN);
