@@ -2,6 +2,7 @@ import { IResolvers } from '@graphql-tools/utils';
 import dotenv from 'dotenv';
 
 import { Schedule } from '../../entities/Schedule';
+import { ScheduleProgrammed } from '../../entities/ScheduleProgrammed';
 import { Subscription } from '../../entities/Subscription';
 import {
   createScheduleDataType,
@@ -57,16 +58,17 @@ const getLiveSubscription = (
 };
 
 /**
- * @returns Los planes que admite el schedule; lista vacía ⇒ sin restricción.
+ * @returns Los planes que admite el schedule o la plantilla semanal; lista
+ * vacía ⇒ sin restricción.
  */
 const allowedPlans = async (
-  schedule: Schedule,
+  restrictable: Schedule | ScheduleProgrammed,
   _: any,
   context: ContextProps
 ) => {
   const scheduleService = new ScheduleService(context.em);
 
-  return await scheduleService.getAllowedPlans(schedule);
+  return await scheduleService.getAllowedPlans(restrictable);
 };
 
 /**
@@ -526,6 +528,9 @@ export const scheduleResolvers: IResolvers = {
   Schedule: {
     allowedPlans,
     planAccess,
+  },
+  ScheduleProgrammed: {
+    allowedPlans,
   },
   Mutation: {
     createSchedule: withPermissions(

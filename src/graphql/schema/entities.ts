@@ -144,6 +144,7 @@ type ScheduleProgrammed {
     description: String
     age: Int
     type: ScheduleType
+    allowedPlans: [Plan!]!
 }
     
 type ScheduleOptions {

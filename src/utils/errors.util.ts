@@ -13,8 +13,6 @@ export const VAL_ERRORS = {
   USER_ALREADY_IN_SCHEDULE: 'User is already registered for this schedule',
   PLAN_NOT_ALLOWED_IN_SCHEDULE:
     'Your current plan does not allow registering for this schedule',
-  PLAN_RESTRICTION_NOT_SUPPORTED_ON_REPEAT:
-    'A plan restriction cannot be set on a repeating schedule yet; create it and then restrict each schedule',
   PLAN_NOT_IN_COMPANY:
     'One or more of the selected plans do not belong to this company',
   INCORRECT_PASSWORD: 'Current password is incorrect',

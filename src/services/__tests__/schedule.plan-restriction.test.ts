@@ -515,16 +515,8 @@ describe('ScheduleService — Restricted Schedule (plan restriction)', () => {
       ).rejects.toThrow(VAL_ERRORS.PLAN_NOT_IN_COMPANY);
     });
 
-    it('should refuse loudly, not silently drop the restriction, when the schedule repeats', async () => {
-      await expect(
-        scheduleService.createSchedule(
-          buildCreateInput({
-            repeat: true,
-            allowedPlanIds: [PREMIUM_PLAN.id],
-          })
-        )
-      ).rejects.toThrow(VAL_ERRORS.PLAN_RESTRICTION_NOT_SUPPORTED_ON_REPEAT);
-    });
+    // `repeat: true` lleva la restricción a la plantilla semanal: lo cubre
+    // scheduleProgrammed.plan-restriction.test.ts (issue #12).
   });
 
   describe('updateSchedule — assigning the restriction', () => {

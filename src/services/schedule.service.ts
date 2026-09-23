@@ -32,6 +32,7 @@ import {
   createDateWithTime,
   createInitialSchedules,
   createScheduleProgrammed,
+  getAllowedPlansOf,
 } from '../utils/schedules.util';
 
 import { BaseService } from './base.service';
@@ -659,15 +660,9 @@ export class ScheduleService extends BaseService {
         const adminRef = tem.getReference(User, admin);
 
         if (repeat) {
-          // La restricción sobre la plantilla semanal es trabajo del issue #12.
-          // Aceptar los planes aquí y tirarlos en silencio le haría creer al
-          // administrador que ha restringido la clase.
-          if (allowedPlanIds?.length) {
-            throw new ValidationError(
-              VAL_ERRORS.PLAN_RESTRICTION_NOT_SUPPORTED_ON_REPEAT
-            );
-          }
-
+          // La plantilla semanal lleva la restricción y la siembra en cada
+          // schedule que engendra (issue #12), en vez de obligar al
+          // administrador a re-marcarlos uno a uno cada semana.
           await createScheduleProgrammed(
             {
               daysOfWeek: days,
@@ -679,6 +674,10 @@ export class ScheduleService extends BaseService {
               admin: adminRef,
               age: finalAge,
               type,
+              allowedPlans: await this.resolveAllowedPlans(
+                tem,
+                allowedPlanIds ?? []
+              ),
             },
             { em: tem, currentUser }
           );
@@ -775,7 +774,7 @@ export class ScheduleService extends BaseService {
     if (id) {
       const scheduleProgrammed = await scheduleProgrammedRepo.findOne(
         { id },
-        { populate: ['admin'] }
+        { populate: ['admin', 'allowedPlans'] }
       );
       if (!scheduleProgrammed) {
         throw new NotFoundError('ScheduleProgrammed');
@@ -786,7 +785,7 @@ export class ScheduleService extends BaseService {
     }
 
     const schedulesProgrammed = await scheduleProgrammedRepo.findAll({
-      populate: ['admin'],
+      populate: ['admin', 'allowedPlans'],
     });
     return createServiceResponse(200, 'Schedules programmed found', true, {
       schedulesProgrammed,
@@ -902,8 +901,10 @@ export class ScheduleService extends BaseService {
             'schedules',
             'schedules.users',
             'schedules.waitListUsers',
+            'schedules.allowedPlans',
             'admin',
             'company',
+            'allowedPlans',
           ],
         }
       );
@@ -944,6 +945,18 @@ export class ScheduleService extends BaseService {
       if (updateData.age !== undefined) scheduleProgrammed.age = updateData.age;
       if (updateData.admin !== undefined)
         scheduleProgrammed.admin = tem.getReference(User, updateData.admin);
+
+      // Restricted Schedule sobre la plantilla: omitir la lista la deja como
+      // estaba; darla la pisa aquí y, más abajo, en todos los schedules
+      // futuros de los días que se conservan. Se resuelve una sola vez — los
+      // planes son los mismos para la plantilla y para lo que engendra.
+      const allowedPlans =
+        updateData.allowedPlanIds !== undefined
+          ? await this.resolveAllowedPlans(tem, updateData.allowedPlanIds)
+          : null;
+      if (allowedPlans !== null) {
+        scheduleProgrammed.allowedPlans.set(allowedPlans);
+      }
 
       const now = moment();
       const futureSchedules = scheduleProgrammed.schedules
@@ -996,6 +1009,14 @@ export class ScheduleService extends BaseService {
             endHour: updateData.endHour,
           };
           await this.updateSchedule(updateParams, tem);
+
+          // Editar la plantilla pisa la restricción de todo schedule futuro,
+          // haya divergido o no: quien cambia la política en la plantilla la
+          // quiere aplicada ya. Lo pasado no se toca — `futureSchedules` ya
+          // deja fuera los schedules anteriores a ahora.
+          if (allowedPlans !== null) {
+            futureSchedule.allowedPlans.set(allowedPlans);
+          }
         }
       }
 
@@ -1355,20 +1376,17 @@ export class ScheduleService extends BaseService {
   }
 
   /**
-   * Planes que admite un schedule (**Restricted Schedule**). Inicializa la
-   * colección si hace falta.
+   * Planes que admite un schedule o una plantilla semanal (**Restricted
+   * Schedule**). Inicializa la colección si hace falta.
    *
-   * @param schedule - Schedule del que se quiere la restricción.
-   * @returns Los planes admitidos; lista vacía ⇒ schedule sin restricción.
+   * @param schedule - Schedule o Schedule Programmed del que se quiere la
+   * restricción.
+   * @returns Los planes admitidos; lista vacía ⇒ sin restricción.
    */
-  public async getAllowedPlans(schedule: Schedule): Promise<Plan[]> {
-    if (!schedule.allowedPlans) {
-      return [];
-    }
-    if (!schedule.allowedPlans.isInitialized()) {
-      await schedule.allowedPlans.init();
-    }
-    return schedule.allowedPlans.getItems();
+  public async getAllowedPlans(
+    schedule: Schedule | ScheduleProgrammed
+  ): Promise<Plan[]> {
+    return await getAllowedPlansOf(schedule);
   }
 
   /**

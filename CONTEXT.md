@@ -9,7 +9,7 @@ A planned session or class at a gym/company, which has a specific capacity (maxi
 A schedule cannot be deleted if it has registered users or users on the waitlist; in such cases, it is _cancelled_ (deactivated but preserved in history) instead of physically deleted. Past schedules are also preserved and never deleted automatically when their recurring template (Schedule Programmed) is removed.
 
 **Schedule Programmed (Programación Semanal)**:
-A weekly recurring template that defines the days of the week, hours, capacity, and administrator (coach) for a type of session. It serves as the baseline to automatically spawn individual Schedule instances for future weeks.
+A weekly recurring template that defines the days of the week, hours, capacity, administrator (coach) and — see **Restricted Schedule** — the admitted plans for a type of session. It serves as the baseline to automatically spawn individual Schedule instances for future weeks.
 
 **Schedule Options**:
 Settings configured per company/gym that dictate rules for booking, capacity requirements, and administrative warnings.
@@ -73,7 +73,7 @@ Rules:
 - The API exposes `Schedule.allowedPlans` (raw, for the backoffice) and `Schedule.planAccess` — a **per-caller** derived field `{ canRegister, reason, requiredPlans }` the mobile app consumes instead of re-implementing the rule. Its scope is this restriction only: it never absorbs capacity, credits or the booking window.
 
 - It applies to the **Waitlist** too, checked twice — on joining and again on promotion — exactly like the **Session Credit** rule. A non-qualifying member is refused when joining, with the same error. On promotion a candidate who has lost eligibility is skipped and dropped from **that** waitlist only; the seat falls through to the next eligible candidate, and if nobody qualifies it is left free. A place already held is never revoked: a waitlist slot is an option on a seat, evaluated when exercised.
-- The **Schedule Programmed** template does not carry a restriction yet (issue #12) — asking for one while creating a repeating schedule is refused rather than silently dropped.
+- The **Schedule Programmed** template carries the same restriction (`ScheduleProgrammed.allowedPlans`, with the same tenancy trigger) and **seeds** it into every schedule it spawns, so an administrator configures it once instead of re-marking each week's instances. An individual schedule may diverge afterwards, but **editing the template overwrites the restriction on every future schedule of the days it keeps** — exactly as it already does for title, description, capacity, type and coach. Past schedules are never touched; omitting `allowedPlanIds` on the template update leaves every divergence alone.
 
 Rationale for evaluating at booking, for ignoring Future Subscriptions and for the absence of any bypass or eviction: [ADR 0005](./docs/adr/0005-plan-restriction-evaluated-at-booking.md).
 

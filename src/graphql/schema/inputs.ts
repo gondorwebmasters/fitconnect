@@ -117,6 +117,8 @@ input UpdateScheduleProgrammedInput {
     description: String
     type: ScheduleType
     age: Int
+    """Restricted Schedule: omitir deja la restriccion como esta; darla pisa la de la plantilla y la de todos sus schedules futuros. Lista vacia la quita."""
+    allowedPlanIds: [ID!]
 }
 
 input CreateUserInput {
@@ -163,7 +165,7 @@ input CreateScheduleInput {
     maxUsers: Int!
     admin: ID!
     date: String
-    """Restricted Schedule: planes que admite el schedule creado. Omitir o lista vacia = abierto. Solo admitido con repeat: false; la restriccion de la plantilla semanal aun no existe y pedirla aqui con repeat: true se rechaza."""
+    """Restricted Schedule: planes que admite el schedule creado. Omitir o lista vacia = abierto. Con repeat: true la restriccion va a la plantilla semanal, que la siembra en cada schedule que engendra."""
     allowedPlanIds: [ID!]
 }
 

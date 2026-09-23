@@ -146,6 +146,7 @@ export type UpdateScheduleProgrammedProps = {
     description?: string;
     type?: ScheduleType;
     age?: number | null;
+    allowedPlanIds?: string[];
   };
 };
 

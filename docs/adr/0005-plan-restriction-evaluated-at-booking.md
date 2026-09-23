@@ -104,12 +104,19 @@ decisiones antes de escribir nada:
   select-in en las queries de lista y la suscripción vigente del llamante se
   resuelve una sola vez por petición.
 
-## Hueco conocido mientras la entrega está a medias
+## La plantilla semanal
 
-La restricción sobre la **plantilla semanal**
-(`ScheduleProgrammed`) es del issue #12: pedir planes al crear un schedule con
-`repeat: true` se **rechaza** en vez de aceptarse y tirarse en silencio, que le
-haría creer al administrador que ha restringido la clase.
+La **plantilla semanal** (`ScheduleProgrammed`) lleva la misma restricción y la
+**siembra** en cada schedule que engendra (issue #12). Editar la plantilla
+**pisa** la restricción de todos los schedules futuros de los días que
+conserva, igual que ya hace con título, aforo, tipo o coach: no se hace
+excepción con la restricción, porque quien cambia la política en la plantilla
+la quiere aplicada ya. Lo pasado no se toca, y un schedule puede divergir hasta
+la siguiente edición de la plantilla.
+
+Pisar la divergencia es deliberado: la alternativa —respetar todo schedule que
+se hubiera tocado a mano— deja a la plantilla sin poder corregir una política
+equivocada, que es justo para lo que se edita.
 
 ## Trade-off
 
