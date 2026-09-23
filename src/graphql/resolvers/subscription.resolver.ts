@@ -356,6 +356,26 @@ export const applySubscriptionCredit = async (
   }
 };
 
+export const adjustSessionCredits = async (
+  _: any,
+  args: { subscriptionId: string; delta: number; reason: string },
+  context: ContextProps
+) => {
+  try {
+    const service = new SubscriptionService(
+      context.em,
+      context.paymentProcessor
+    );
+    return await service.adjustSessionCredits(
+      args,
+      context.currentUser.id,
+      context.currentUser?.activeCompanyId
+    );
+  } catch (error: any) {
+    return handleError(error);
+  }
+};
+
 // ═══════════════════════════════════════════
 // EXPORT
 // ═══════════════════════════════════════════
@@ -410,6 +430,10 @@ export const subscriptionResolvers = {
     applySubscriptionCredit: withPermissions(
       plansPermissions.CREATE_UPDATE_DELETE,
       applySubscriptionCredit
+    ),
+    adjustSessionCredits: withPermissions(
+      plansPermissions.CREATE_UPDATE_DELETE,
+      adjustSessionCredits
     ),
   },
 };

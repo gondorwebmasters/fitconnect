@@ -21,6 +21,7 @@ export const VAL_ERRORS = {
   MAX_USERS_BELOW_CURRENT:
     'Maximum users cannot be less than the number of registered users',
   START_DATE_MUST_BE_BEFORE_END_DATE: 'startDate must be before endDate.',
+  NO_SESSION_CREDITS: 'No session credits left in the active session pack',
 } as const;
 
 export const NOT_FND_ERRORS = {
@@ -78,6 +79,13 @@ export const BAD_REQUEST_ERRORS = {
     'A session pack is single-use and cannot be reactivated. Create a new subscription instead.',
   CANNOT_CHANGE_PLAN_WITH_SESSION_PACK:
     'Plan changes into or out of a session pack are not allowed. Cancel and schedule a new subscription instead.',
+  CREDIT_DELTA_INVALID: 'delta must be a non-zero integer',
+  CREDIT_ADJUSTMENT_UNLIMITED:
+    'Cannot adjust credits on an unlimited (non session pack) subscription',
+  CREDIT_ADJUSTMENT_CLOSED:
+    'Cannot adjust credits on a closed subscription (canceled or period elapsed)',
+  CREDIT_ADJUSTMENT_OUT_OF_BOUNDS:
+    'Adjustment rejected: creditsTotal cannot go below creditsUsed or below 0',
 } as const;
 
 export const CONFLICT_ERRORS = {

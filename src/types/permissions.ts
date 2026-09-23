@@ -30,6 +30,11 @@ export interface LoginPermissionsContext {
    * null ⇒ ilimitado (plan temporal) o sin suscripción.
    */
   remainingCredits?: number | null;
+  /**
+   * Snapshot de créditos del Session Pack (N en "te quedan X de N").
+   * null ⇒ ilimitado o sin suscripción.
+   */
+  creditsTotal?: number | null;
 }
 
 export interface CompanyPermissionsContext {

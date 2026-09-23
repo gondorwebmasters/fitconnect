@@ -277,6 +277,12 @@ type SubscriptionHistoryEntry {
     actor: String!
     detail: String!
     timestamp: String!
+    """Schedule asociado (eventos credit_consumed / credit_refunded)."""
+    scheduleId: String
+    """Delta aplicado (evento credit_adjusted)."""
+    delta: Int
+    """Motivo del ajuste (evento credit_adjusted)."""
+    reason: String
 }
 
 type SubscriptionHistoryResponse implements BasicResponse {

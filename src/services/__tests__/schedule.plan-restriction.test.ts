@@ -181,11 +181,10 @@ describe('ScheduleService — Restricted Schedule (plan restriction)', () => {
 
       expect(response.success).toBe(true);
       expect(schedule.users.getItems()).toHaveLength(1);
-      expect(mockEntityManager.findOne).not.toHaveBeenCalledWith(
-        Subscription,
-        expect.anything(),
-        expect.anything()
-      );
+      // Antes se afirmaba aquí que no se consultaba ninguna suscripción. Ya no
+      // vale como proxy: desde ADR 0004 el Session Credit la consulta en toda
+      // reserva. Lo que sí garantiza que la restricción no ha intervenido es el
+      // resultado — se admite sin exigir plan alguno.
     });
   });
 
@@ -378,11 +377,10 @@ describe('ScheduleService — Restricted Schedule (plan restriction)', () => {
       );
 
       expect(response.message).toBe('User added to waitlist');
-      expect(mockEntityManager.findOne).not.toHaveBeenCalledWith(
-        Subscription,
-        expect.anything(),
-        expect.anything()
-      );
+      // Antes se afirmaba aquí que no se consultaba ninguna suscripción. Ya no
+      // vale como proxy: desde ADR 0004 el Session Credit la consulta en toda
+      // reserva. Lo que sí garantiza que la restricción no ha intervenido es el
+      // resultado — se admite sin exigir plan alguno.
     });
 
     it('should report the booking-limit refusal before the plan one, as at registration', async () => {
@@ -772,11 +770,8 @@ describe('ScheduleService — Restricted Schedule on the Waitlist (promotion)', 
 
     expect(enrolled()).toEqual(['user-first']);
     expect(waiting()).toEqual(['user-second']);
-    expect(mockEntityManager.findOne).not.toHaveBeenCalledWith(
-      Subscription,
-      expect.anything(),
-      expect.anything()
-    );
+    // Ídem: la consulta de suscripción que se ve aquí es la del crédito
+    // (ADR 0004), no la de la restricción de planes.
   });
 
   it('should keep the promoted member enrolled even if they would no longer qualify later', async () => {
@@ -802,7 +797,12 @@ describe('ScheduleService — Restricted Schedule on the Waitlist (promotion)', 
     jest.spyOn(console, 'error').mockImplementation(() => {});
     mockEntityManager.findOne.mockImplementation(
       async (entity: any, where: any) => {
-        if (entity === Subscription) throw new Error('connection reset');
+        // Solo la consulta de elegibilidad del candidato falla; la del
+        // reembolso de quien deja la plaza tiene que seguir funcionando.
+        if (entity === Subscription && where.user === 'user-candidate') {
+          throw new Error('connection reset');
+        }
+        if (entity === Subscription) return null;
         if (entity === User) return users[where.id] ?? null;
         if (entity === Company) return { scheduleOptions };
         return null;
@@ -816,11 +816,12 @@ describe('ScheduleService — Restricted Schedule on the Waitlist (promotion)', 
   });
 
   /**
-   * ADR 0004 manda que un candidato sin créditos también se salte. Ese
-   * descuento todavía no está en `ScheduleService` (issue #5), así que lo que
-   * se fija aquí es el **orden**: los límites de reserva se evalúan antes que
-   * el plan, y cada motivo arrastra su propia consecuencia — el límite limpia
-   * las demás listas del candidato, el plan solo lo saca de esta.
+   * ADR 0004 manda que un candidato sin créditos también se salte, y ese
+   * descuento ya está en `ScheduleService`. Lo que se fija aquí es el
+   * **orden**: los límites de reserva se evalúan antes que el plan, y el plan
+   * antes que el crédito; cada motivo arrastra su propia consecuencia — el
+   * límite limpia las demás listas del candidato, el plan solo lo saca de
+   * esta.
    */
   describe('interaction with the other skip rules', () => {
     it('should skip for the booking limit, not for the plan, when both apply', async () => {
