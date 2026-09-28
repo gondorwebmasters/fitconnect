@@ -7,7 +7,7 @@ import { Plan } from '../entities/Plan';
 import { Schedule } from '../entities/Schedule';
 import { ScheduleOptions } from '../entities/ScheduleOptions';
 import { ScheduleProgrammed } from '../entities/ScheduleProgrammed';
-import { Subscription, SubscriptionStatus } from '../entities/Subscription';
+import { Subscription } from '../entities/Subscription';
 import { User } from '../entities/User';
 import { CurrentUser, ServiceResponse } from '../types/common.type';
 import {
@@ -36,6 +36,7 @@ import {
 } from '../utils/schedules.util';
 
 import { BaseService } from './base.service';
+import { EntitlementService } from './entitlement.service';
 import { NotificationService } from './notification.service';
 
 export type createScheduleDataType = {
@@ -82,8 +83,11 @@ export type SchedulePlanAccess = {
 };
 
 export class ScheduleService extends BaseService {
+  private readonly entitlement: EntitlementService;
+
   constructor(em: EntityManager) {
     super(em);
+    this.entitlement = new EntitlementService(em);
   }
 
   /**
@@ -1456,12 +1460,12 @@ export class ScheduleService extends BaseService {
    * servicio: la usan tanto la restricción de planes (ADR 0005) como el
    * consumo y reembolso de Session Credits (ADR 0004).
    *
-   * @remarks Misma definición que la consulta de suscripción activa de
-   * `PermissionService` (ACTIVE/TRIALING y periodo en curso), reproducida aquí
-   * porque hace falta poder pasar un `EntityManager` transaccional y tolerar
-   * que no haya empresa. No popula `plan`: la restricción solo compara ids.
-   * Con `companyId` explícito se salta el filtro `companyContext` para no
-   * depender del header de la request; sin él se deja actuar al filtro.
+   * @remarks Delega en {@link EntitlementService}, el único dueño de la
+   * pregunta "¿qué suscripciones de este miembro están vigentes?" (ADR 0006).
+   * Este servicio ya no reproduce la consulta: le pasa el `EntityManager`
+   * (posiblemente transaccional) y tolera que no haya empresa, que son las dos
+   * necesidades que en su día obligaron a duplicarla. No popula `plan`: la
+   * restricción solo compara ids.
    *
    * @param userId - Usuario cuya suscripción vigente se busca.
    * @param companyId - Empresa en la que se busca.
@@ -1473,20 +1477,7 @@ export class ScheduleService extends BaseService {
     companyId: string | undefined,
     em: EntityManager = this.em
   ): Promise<Subscription | null> {
-    const now = new Date();
-    return em.findOne(
-      Subscription,
-      {
-        user: userId,
-        ...(companyId ? { company: companyId } : {}),
-        status: {
-          $in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING],
-        },
-        currentPeriodStart: { $lte: now },
-        currentPeriodEnd: { $gte: now },
-      },
-      companyId ? { filters: false } : {}
-    );
+    return this.entitlement.findLiveSubscription(userId, companyId, { em });
   }
 
   /**

@@ -22,6 +22,7 @@ import {
 } from '../types/permissions';
 
 import { BaseService } from './base.service';
+import { EntitlementService } from './entitlement.service';
 
 interface CreatePermissionInput {
   module: PermissionModule;
@@ -39,8 +40,11 @@ export class PermissionService extends BaseService {
     'users:read',
   ];
 
+  private readonly entitlement: EntitlementService;
+
   constructor(em: EntityManager) {
     super(em);
+    this.entitlement = new EntitlementService(em);
   }
 
   // ─────────────────────────────────────────────
@@ -207,33 +211,25 @@ export class PermissionService extends BaseService {
     return subscription?.plan || null;
   }
 
+  /**
+   * La suscripción vigente del miembro en la empresa, con su plan y los
+   * permisos del plan ya populados.
+   *
+   * @remarks Delega en {@link EntitlementService}, el único dueño de la
+   * pregunta (ADR 0006): aquí no vive ninguna consulta propia.
+   */
   async getUserActiveSubscriptionInCompany(
     userId: string,
     companyId: string
   ): Promise<Subscription | null> {
-    const now = moment().toDate();
-
-    return this.em.findOne(
-      Subscription,
-      {
-        user: userId,
-        company: companyId,
-        status: {
-          $in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING],
-        },
-        currentPeriodStart: { $lte: now },
-        currentPeriodEnd: { $gte: now },
-      },
-      {
-        populate: [
-          'plan',
-          'plan.planPermissions',
-          'plan.planPermissions.permission',
-          'plan.name',
-        ],
-        filters: false,
-      }
-    );
+    return this.entitlement.findLiveSubscription(userId, companyId, {
+      populate: [
+        'plan',
+        'plan.planPermissions',
+        'plan.planPermissions.permission',
+        'plan.name',
+      ],
+    });
   }
 
   /**
