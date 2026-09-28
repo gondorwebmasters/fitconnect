@@ -13,6 +13,8 @@
  * lo ejecuta (`src/scripts/audit-plan-permissions.ts`) sea una cáscara fina.
  */
 
+import { PlanStatus } from '../entities/Plan';
+
 /** Qué tan lejos llega un permiso concedido por un plan. */
 export enum GrantRisk {
   /** `*:*` — concede absolutamente todo. */
@@ -25,10 +27,18 @@ export enum GrantRisk {
   READ = 'read',
 }
 
-/** Riesgos que la auditoría marca para revisión con el gimnasio. */
+/**
+ * Riesgos que el issue #17 pide marcar: «cualquier plan que conceda un comodín
+ * o un permiso de gestión».
+ */
 const FLAGGED_RISKS: readonly GrantRisk[] = [
   GrantRisk.WILDCARD,
   GrantRisk.MANAGE,
+];
+
+/** Riesgos de los que la auditoría informa, marcados o no. */
+const REPORTED_RISKS: readonly GrantRisk[] = [
+  ...FLAGGED_RISKS,
   GrantRisk.WRITE,
 ];
 
@@ -39,11 +49,12 @@ export interface PlanGrantRow {
   /** `null` en planes huérfanos, sin empresa asignada. */
   companyId: string | null;
   companyName: string | null;
-  /** `active` | `inactive` | `archived`. */
-  status: string;
+  status: PlanStatus;
   isActive: boolean;
   /** Número de Session Credits si es un Session Pack; `null` si es ilimitado. */
   sessionCount: number | null;
+  /** Suscripciones `ACTIVE`/`TRIALING` que sostienen el plan ahora mismo. */
+  liveSubscriptions: number;
   /** Nombres de permiso activos del plan, p. ej. `schedules:read`. */
   grants: string[];
 }
@@ -53,6 +64,9 @@ export interface AuditedPlan {
   planId: string;
   planName: string;
   sessionCount: number | null;
+  /** Si un miembro puede contratarlo hoy; un archivado sostenido no lo es. */
+  isSelectable: boolean;
+  liveSubscriptions: number;
   grants: string[];
   /** Permisos agrupados por riesgo; solo aparecen los riesgos presentes. */
   grantsByRisk: Partial<Record<GrantRisk, string[]>>;
@@ -73,6 +87,7 @@ export interface AuditedCompany {
 
 /** Un plan marcado, aplanado para la lista de revisión. */
 export interface FlaggedPlan {
+  planId: string;
   companyName: string | null;
   planName: string;
   risks: GrantRisk[];
@@ -83,16 +98,23 @@ export interface FlaggedPlan {
 /** El informe completo de la auditoría. */
 export interface PlanPermissionAudit {
   companies: AuditedCompany[];
+  /** Planes con comodín o gestión: lo que el issue #17 manda revisar. */
   flagged: FlaggedPlan[];
+  /** Planes que solo conceden escritura: revisión secundaria. */
+  writeGrants: FlaggedPlan[];
   totalPlansAudited: number;
 }
 
 /**
  * El alcance de un permiso por su nombre.
  *
- * @remarks Refleja lo que `PermissionService.hasPermission` resuelve de verdad:
+ * @remarks Refleja lo que `PermissionService.userHasPermissionInCompany`
+ * resuelve de verdad:
  * `*:*` y `<módulo>:manage` son ramas explícitas ahí, así que aquí son riesgos
  * propios y no simple escritura.
+ *
+ * @param grant - Nombre del permiso, p. ej. `schedules:create`.
+ * @returns El riesgo que representa concederlo.
  */
 export function classifyGrant(grant: string): GrantRisk {
   if (grant === '*:*') return GrantRisk.WILDCARD;
@@ -105,14 +127,33 @@ export function classifyGrant(grant: string): GrantRisk {
   return GrantRisk.READ;
 }
 
-/** Un plan cuenta como vivo si un miembro puede sostenerlo hoy. */
-function isLive(row: PlanGrantRow): boolean {
-  return row.isActive && row.status === 'active';
+/** Si un miembro puede contratar el plan hoy. */
+function isSelectable(row: PlanGrantRow): boolean {
+  return row.isActive && row.status === PlanStatus.ACTIVE;
 }
 
-/** Clave de agrupación estable, también para los planes sin empresa. */
-function companyKey(row: PlanGrantRow): string {
-  return row.companyId ?? '';
+/**
+ * Un plan entra en la auditoría si sus permisos pueden llegar a la unión.
+ *
+ * @remarks No basta con mirar `status`/`isActive`: `PlanService.archivePlan`
+ * archiva **sin** cancelar las suscripciones existentes (ADR 0005), y la
+ * resolución de permisos parte de la suscripción viva, nunca del estado del
+ * plan. Un plan archivado que alguien todavía sostiene sigue concediendo.
+ */
+function isAuditable(row: PlanGrantRow): boolean {
+  return isSelectable(row) || row.liveSubscriptions > 0;
+}
+
+/**
+ * Clave de agrupación estable, también para los planes huérfanos.
+ *
+ * @remarks El centinela no puede ser `''`: un `companyId` vacío en la base de
+ * datos se mezclaría con los planes sin empresa.
+ */
+const NO_COMPANY_KEY = Symbol('sin empresa');
+
+function companyKey(row: PlanGrantRow): string | symbol {
+  return row.companyId ?? NO_COMPANY_KEY;
 }
 
 /**
@@ -124,9 +165,9 @@ function companyKey(row: PlanGrantRow): string {
 export function auditPlanPermissions(
   rows: PlanGrantRow[]
 ): PlanPermissionAudit {
-  const live = rows.filter(isLive);
+  const live = rows.filter(isAuditable);
 
-  const byCompany = new Map<string, PlanGrantRow[]>();
+  const byCompany = new Map<string | symbol, PlanGrantRow[]>();
   for (const row of live) {
     const key = companyKey(row);
     const bucket = byCompany.get(key);
@@ -145,10 +186,27 @@ export function auditPlanPermissions(
     };
   });
 
-  const flagged: FlaggedPlan[] = companies.flatMap(company =>
+  const flagged = collectPlans(companies, FLAGGED_RISKS);
+  // La escritura no la pide el issue, pero también viaja en la unión: va en su
+  // propia lista para no diluir lo que el gimnasio tiene que mirar primero.
+  const alreadyFlagged = new Set(flagged.map(plan => plan.planId));
+  const writeGrants = collectPlans(companies, [GrantRisk.WRITE]).filter(
+    plan => !alreadyFlagged.has(plan.planId)
+  );
+
+  return { companies, flagged, writeGrants, totalPlansAudited: live.length };
+}
+
+/** Aplana los planes de cada empresa que incurren en alguno de esos riesgos. */
+function collectPlans(
+  companies: AuditedCompany[],
+  risks: readonly GrantRisk[]
+): FlaggedPlan[] {
+  return companies.flatMap(company =>
     company.plans
-      .filter(plan => plan.risks.length > 0)
+      .filter(plan => risks.some(risk => plan.grantsByRisk[risk]))
       .map(plan => ({
+        planId: plan.planId,
         companyName: company.companyName,
         planName: plan.planName,
         risks: plan.risks,
@@ -157,8 +215,6 @@ export function auditPlanPermissions(
         ),
       }))
   );
-
-  return { companies, flagged, totalPlansAudited: live.length };
 }
 
 /** Los permisos que conceden todos los planes de la empresa. */
@@ -184,9 +240,11 @@ function auditPlan(row: PlanGrantRow, baseline: string[]): AuditedPlan {
     planId: row.planId,
     planName: row.planName,
     sessionCount: row.sessionCount,
+    isSelectable: isSelectable(row),
+    liveSubscriptions: row.liveSubscriptions,
     grants,
     grantsByRisk,
-    risks: FLAGGED_RISKS.filter(risk => grantsByRisk[risk]),
+    risks: REPORTED_RISKS.filter(risk => grantsByRisk[risk]),
     beyondBaseline: grants.filter(g => !baseline.includes(g)),
   };
 }
@@ -198,6 +256,9 @@ const NO_COMPANY = '(sin empresa)';
  *
  * @remarks El issue pide que el resultado quede registrado; este formato es el
  * entregable, no un log de depuración.
+ *
+ * @param report - El informe devuelto por {@link auditPlanPermissions}.
+ * @returns El informe en Markdown.
  */
 export function formatAuditMarkdown(report: PlanPermissionAudit): string {
   const lines: string[] = [
@@ -205,7 +266,8 @@ export function formatAuditMarkdown(report: PlanPermissionAudit): string {
     '',
     `Planes vivos auditados: **${report.totalPlansAudited}** ` +
       `en **${report.companies.length}** empresas. ` +
-      `Marcados para revisión: **${report.flagged.length}**.`,
+      `Con comodín o gestión: **${report.flagged.length}**; ` +
+      `solo con escritura: **${report.writeGrants.length}**.`,
     '',
   ];
 
@@ -216,13 +278,19 @@ export function formatAuditMarkdown(report: PlanPermissionAudit): string {
       `Línea base (todos los planes): \`${company.baseline.join('`, `') || '—'}\``
     );
     lines.push('');
-    lines.push('| Plan | Bono | Riesgo | Permisos | Por encima de la base |');
-    lines.push('| --- | --- | --- | --- | --- |');
+    lines.push(
+      '| Plan | Bono | Vivas | Riesgo | Permisos | Por encima de la base |'
+    );
+    lines.push('| --- | --- | --- | --- | --- | --- |');
 
     for (const plan of company.plans) {
+      const held = plan.isSelectable
+        ? `${plan.liveSubscriptions}`
+        : `${plan.liveSubscriptions} (archivado)`;
       lines.push(
         `| ${plan.planName} ` +
           `| ${plan.sessionCount ?? '—'} ` +
+          `| ${held} ` +
           `| ${plan.risks.join(', ') || '—'} ` +
           `| ${plan.grants.join(', ') || '—'} ` +
           `| ${plan.beyondBaseline.join(', ') || '—'} |`
@@ -231,12 +299,31 @@ export function formatAuditMarkdown(report: PlanPermissionAudit): string {
     lines.push('');
   }
 
-  lines.push('### Marcados para revisar con el gimnasio');
+  appendFlagged(
+    lines,
+    '### Comodín o gestión — revisar con el gimnasio',
+    report.flagged
+  );
+  appendFlagged(
+    lines,
+    '### Solo escritura — revisión secundaria',
+    report.writeGrants
+  );
+
+  return lines.join('\n');
+}
+
+function appendFlagged(
+  lines: string[],
+  heading: string,
+  plans: FlaggedPlan[]
+): void {
+  lines.push(heading);
   lines.push('');
-  if (report.flagged.length === 0) {
+  if (plans.length === 0) {
     lines.push('Ninguno.');
   } else {
-    for (const plan of report.flagged) {
+    for (const plan of plans) {
       lines.push(
         `- **${plan.planName}** (${plan.companyName ?? NO_COMPANY}) — ` +
           `${plan.risks.join(', ')}: \`${plan.offendingGrants.join('`, `')}\``
@@ -244,6 +331,4 @@ export function formatAuditMarkdown(report: PlanPermissionAudit): string {
     }
   }
   lines.push('');
-
-  return lines.join('\n');
 }

@@ -1,3 +1,4 @@
+import { PlanStatus } from '../../entities/Plan';
 import {
   auditPlanPermissions,
   classifyGrant,
@@ -42,9 +43,10 @@ describe('auditPlanPermissions', () => {
       planName: 'Mensualidad',
       companyId: 'comp-1',
       companyName: 'Gimnasio Uno',
-      status: 'active',
+      status: PlanStatus.ACTIVE,
       isActive: true,
       sessionCount: null,
+      liveSubscriptions: 0,
       grants: ['schedules:read', 'users:read'],
       ...overrides,
     };
@@ -76,15 +78,50 @@ describe('auditPlanPermissions', () => {
     expect(report.companies[0].plans).toHaveLength(1);
   });
 
-  it('solo audita planes vivos', () => {
+  it('descarta el plan archivado que ya nadie sostiene', () => {
     const report = auditPlanPermissions([
       row(),
-      row({ planId: 'plan-2', status: 'archived' }),
+      row({ planId: 'plan-2', status: PlanStatus.ARCHIVED }),
       row({ planId: 'plan-3', isActive: false }),
     ]);
 
     expect(report.totalPlansAudited).toBe(1);
     expect(report.companies[0].plans.map(p => p.planId)).toEqual(['plan-1']);
+  });
+
+  it('audita el plan archivado que alguien todavía sostiene', () => {
+    // Archivar un plan nunca cancela sus suscripciones (PlanService.archivePlan),
+    // así que sus permisos siguen entrando en la unión.
+    const report = auditPlanPermissions([
+      row({
+        planId: 'plan-2',
+        status: PlanStatus.ARCHIVED,
+        isActive: false,
+        liveSubscriptions: 1,
+        grants: ['users:manage'],
+      }),
+    ]);
+
+    expect(report.totalPlansAudited).toBe(1);
+    expect(report.flagged).toHaveLength(1);
+    expect(report.companies[0].plans[0].isSelectable).toBe(false);
+  });
+
+  it('distingue el plan que se puede contratar del que solo se sostiene', () => {
+    const report = auditPlanPermissions([
+      row({ planId: 'a' }),
+      row({
+        planId: 'b',
+        status: PlanStatus.ARCHIVED,
+        isActive: false,
+        liveSubscriptions: 2,
+      }),
+    ]);
+    const [a, b] = report.companies[0].plans;
+
+    expect(a.isSelectable).toBe(true);
+    expect(b.isSelectable).toBe(false);
+    expect(b.liveSubscriptions).toBe(2);
   });
 
   it('marca el plan que concede un comodín', () => {
@@ -95,6 +132,19 @@ describe('auditPlanPermissions', () => {
     expect(report.flagged).toHaveLength(1);
     expect(report.flagged[0].planName).toBe('Mensualidad');
     expect(report.flagged[0].offendingGrants).toEqual(['*:*']);
+  });
+
+  it('separa la escritura del marcado que pide el issue', () => {
+    // El issue marca comodín y gestión; la escritura se revisa aparte.
+    const report = auditPlanPermissions([
+      row({ planId: 'w', grants: ['schedules:read', 'schedules:create'] }),
+      row({ planId: 'm', grants: ['users:manage'] }),
+    ]);
+
+    expect(report.flagged.map(f => f.planName)).toEqual(['Mensualidad']);
+    expect(report.flagged[0].offendingGrants).toEqual(['users:manage']);
+    expect(report.writeGrants).toHaveLength(1);
+    expect(report.writeGrants[0].offendingGrants).toEqual(['schedules:create']);
   });
 
   it('marca el plan que concede gestión y lista los permisos culpables', () => {
@@ -121,11 +171,21 @@ describe('auditPlanPermissions', () => {
     ]);
   });
 
+  it('no marca como escritura un plan que ya está marcado por gestión', () => {
+    const report = auditPlanPermissions([
+      row({ grants: ['users:manage', 'schedules:create'] }),
+    ]);
+
+    expect(report.flagged).toHaveLength(1);
+    expect(report.writeGrants).toEqual([]);
+  });
+
   it('no marca un plan que solo concede lectura', () => {
     const report = auditPlanPermissions([row()]);
 
     expect(report.companies[0].plans[0].risks).toEqual([]);
     expect(report.flagged).toEqual([]);
+    expect(report.writeGrants).toEqual([]);
   });
 
   it('marca la escritura por separado, sin confundirla con gestión', () => {
@@ -170,9 +230,10 @@ describe('formatAuditMarkdown', () => {
         planName: 'Plan Tufado',
         companyId: null,
         companyName: null,
-        status: 'active',
+        status: PlanStatus.ACTIVE,
         isActive: true,
         sessionCount: null,
+        liveSubscriptions: 0,
         grants: ['companies:manage'],
       },
     ]);

@@ -1,7 +1,9 @@
 import { MikroORM } from '@mikro-orm/core';
 
 import { Plan } from '../entities/Plan';
+import { Subscription, SubscriptionStatus } from '../entities/Subscription';
 import config from '../mikro-orm.config';
+import { createRetryingEntityManager } from '../utils/orm-retry';
 import {
   auditPlanPermissions,
   formatAuditMarkdown,
@@ -20,11 +22,12 @@ import {
 async function run() {
   console.log('🔄 Inicializando base de datos...');
   const orm = await MikroORM.init(config);
-  const em = orm.em.fork();
+  // Segundo argumento: desactiva el filtro companyContext. La auditoría es
+  // deliberadamente cross-tenant — recorre todas las empresas y nombra la de
+  // cada plan.
+  const em = createRetryingEntityManager(orm, true);
 
   try {
-    // La auditoría es deliberadamente cross-tenant: recorre todas las empresas
-    // y nombra la de cada plan, así que desactiva el filtro companyContext.
     const plans = await em.find(
       Plan,
       {},
@@ -35,6 +38,27 @@ async function run() {
       }
     );
 
+    // Un plan archivado que alguien todavía sostiene sigue concediendo
+    // permisos, así que la liveness sale de las suscripciones, no del estado
+    // del plan. Ver `isAuditable` en el util.
+    const now = new Date();
+    const liveByPlan = new Map<string, number>();
+    const liveSubs = await em.find(
+      Subscription,
+      {
+        status: {
+          $in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING],
+        },
+        currentPeriodStart: { $lte: now },
+        currentPeriodEnd: { $gte: now },
+      },
+      { filters: false, fields: ['plan'] }
+    );
+    for (const sub of liveSubs) {
+      const planId = sub.plan?.id;
+      if (planId) liveByPlan.set(planId, (liveByPlan.get(planId) ?? 0) + 1);
+    }
+
     const rows: PlanGrantRow[] = plans.map(plan => ({
       planId: plan.id,
       planName: plan.name,
@@ -43,6 +67,7 @@ async function run() {
       status: plan.status,
       isActive: plan.isActive,
       sessionCount: plan.sessionCount ?? null,
+      liveSubscriptions: liveByPlan.get(plan.id) ?? 0,
       grants: plan.planPermissions
         .getItems()
         .filter(pp => pp.isActive && pp.permission.isActive)
@@ -54,8 +79,8 @@ async function run() {
 
     if (report.flagged.length > 0) {
       console.log(
-        `⚠️  ${report.flagged.length} plan(es) conceden comodín, gestión o ` +
-          'escritura: revísalos con el gimnasio antes de enviar la unión.'
+        `⚠️  ${report.flagged.length} plan(es) conceden comodín o gestión: ` +
+          'revísalos con el gimnasio antes de enviar la unión.'
       );
     }
   } catch (error: any) {
