@@ -31,6 +31,10 @@ The access rules are written over the set, not over "the" subscription:
 - The member's **permissions** are the **union** of the permissions of the plans in the Entitlement. A plan can never *remove* access another plan grants.
 - **Restricted Schedule** asks whether *some* subscription in the Entitlement admits the schedule; **Session Credit** is charged to that same one.
 - A member never holds **two live subscriptions to the same Plan** (`USER_ALREADY_ACTIVE_IN_PLAN`, enforced on both `createSubscription` and `changePlan`). Chaining two identical packs goes through a **Future Subscription**.
+- The API reports the set: the auth payload carries `subscriptions[]` (one entry per live subscription, with **its own** credits) and `getActiveSubscription` returns the whole Entitlement. Their singular fields are **deprecated** — see **Reported Subscription**.
+
+**Reported Subscription (Suscripción reportada)**:
+The single subscription that the **deprecated** singular fields resolve to when the **Entitlement** holds more than one: `subscription.planName`/`status`/`endDate`/`cancelAtPeriodEnd`/`remainingCredits`/`creditsTotal` on the auth payload, and the `subscription` field of `getActiveSubscription`. The **unlimited** live subscription wins (`creditsTotal === null`); on a tie, or when none is unlimited, the one whose period ends furthest away. It is a degraded view kept for apps that predate the plural, and nothing should decide anything from it — a global `remainingCredits` is meaningless once a member holds two **Session Packs**. The rule exists for **stability**: buying a Session Pack must not change what an older app displays. `hasActive` and **Subscription State** are *not* deprecated: they are aggregates over the whole set, not a pick from it.
 
 **Subscription** keeps its original meaning throughout: one row, one plan, one period, its own credits and its own billing. Rationale for the multiplicity and for rejecting a plan taxonomy: [ADR 0006](./docs/adr/0006-multiple-concurrent-subscriptions.md).
 

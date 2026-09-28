@@ -764,6 +764,10 @@ export class AuthService extends BaseService {
       subscription: {
         hasActive: permissionsContext.hasActiveSubscription,
         subscriptionState: permissionsContext.subscriptionState,
+        // La verdad del payload: una entrada por suscripción vigente, con sus
+        // propios créditos. Los campos de debajo son la vista singular
+        // deprecada del mismo conjunto (issue #20, ADR 0006).
+        subscriptions: permissionsContext.subscriptions,
         planName: permissionsContext.plan?.name || null,
         status: permissionsContext.subscriptionStatus,
         isInTrial: permissionsContext.isInTrial || false,
@@ -785,6 +789,10 @@ export class AuthService extends BaseService {
       subscription: {
         hasActive: permissionsContext.hasActiveSubscription,
         subscriptionState: permissionsContext.subscriptionState,
+        // La verdad del payload: una entrada por suscripción vigente, con sus
+        // propios créditos. Los campos de debajo son la vista singular
+        // deprecada del mismo conjunto (issue #20, ADR 0006).
+        subscriptions: permissionsContext.subscriptions,
         planName: permissionsContext.plan?.name || null,
         status: permissionsContext.subscriptionStatus,
         isInTrial: permissionsContext.isInTrial || false,

@@ -79,6 +79,17 @@ type Query {
     # ── Subscription ──────────────────────────────────────────────────
     getSubscription(subscriptionId: ID!): SubscriptionResponse!
     listUserSubscriptions(userId: ID!): SubscriptionResponse!
+    """
+    El Entitlement del miembro: en **subscriptions**, todas sus Subscriptions
+    vigentes — ACTIVE/TRIALING **con el periodo en curso**. Una Suscripcion
+    Futura, que se guarda ya como ACTIVE/TRIALING, queda fuera hasta que su
+    periodo empieza.
+
+    El campo singular **subscription** esta deprecado: es una vista degradada
+    del conjunto para apps antiguas y resuelve con la misma regla determinista
+    que los escalares del auth payload — gana la vigente ilimitada y, en empate
+    o si ninguna lo es, la de periodo mas lejano. Ver ADR 0006.
+    """
     getActiveSubscription(userId: ID!): SubscriptionResponse!
     getSubscriptionsStats: SubscriptionsStatsResponse!
     getSubscriptionHistory(subscriptionId: ID!): SubscriptionHistoryResponse!

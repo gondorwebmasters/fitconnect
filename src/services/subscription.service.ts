@@ -29,6 +29,10 @@ import { sendSubscriptionExpiryWarning } from '../utils/templates.util';
 import { BaseService } from './base.service';
 import { CustomerService } from './customer.service';
 import { EmailService } from './email.service';
+import {
+  EntitlementService,
+  selectReportedSubscription,
+} from './entitlement.service';
 import { InvoiceService } from './invoice.service';
 import { NotificationService } from './notification.service';
 import { PaymentProcessor } from './payment-processor.interface';
@@ -133,6 +137,7 @@ const DUNNING_CONFIG = {
  * findActiveAndFutureSubscriptions() para la regla que lo garantiza.
  */
 export class SubscriptionService extends BaseService {
+  private readonly entitlement: EntitlementService;
   private readonly customerService: CustomerService;
   private readonly invoiceService: InvoiceService;
   private readonly transactionService: TransactionService;
@@ -141,6 +146,7 @@ export class SubscriptionService extends BaseService {
 
   constructor(em: EntityManager, paymentProcessor: PaymentProcessor) {
     super(em, paymentProcessor);
+    this.entitlement = new EntitlementService(em);
     this.customerService = new CustomerService(em);
     this.invoiceService = new InvoiceService(em);
     this.transactionService = new TransactionService(em, paymentProcessor);
@@ -1116,35 +1122,43 @@ export class SubscriptionService extends BaseService {
     );
   }
 
+  /**
+   * El **Entitlement** del miembro: todas sus suscripciones vigentes, más el
+   * campo singular deprecado que conserva una app antigua.
+   *
+   * @remarks Vigente significa `ACTIVE`/`TRIALING` **con el periodo en curso**,
+   * no solo el estado: una **Suscripción Futura** se guarda ya como
+   * ACTIVE/TRIALING y no debe salir aquí. El predicado lo pone
+   * {@link EntitlementService}, el único dueño de la pregunta (ADR 0006), para
+   * que esta query y el payload de auth no puedan divergir.
+   *
+   * `subscription` resuelve con la misma regla determinista que los escalares
+   * del payload (`selectReportedSubscription`, issue #20) y no con "el primero
+   * por fecha de inicio": comprar un Session Pack no puede cambiar lo que
+   * muestra una app que solo lee el singular.
+   *
+   * @param userId - Miembro cuyo Entitlement se consulta.
+   * @returns El conjunto vigente y la suscripción reportada, o `null`.
+   */
   public async getActiveSubscription(userId: string): Promise<ServiceResponse> {
     if (!userId) throw new BadRequestError(BAD_REQUEST_ERRORS.USER_ID_REQUIRED);
 
     const user = await this.em.findOne(User, { id: userId });
     if (!user) throw new NotFoundError('User');
 
-    const activeSubscriptions = await this.em.find(
-      Subscription,
-      {
-        user,
-        status: {
-          $in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING],
-        },
-      },
-      {
-        populate: ['plan', 'defaultPaymentMethod'],
-        orderBy: { currentPeriodStart: QueryOrder.ASC },
-      } as any
+    const entitlement = await this.entitlement.findLiveSubscriptions(
+      userId,
+      undefined,
+      { populate: ['plan', 'defaultPaymentMethod'] }
     );
-
-    const activeSubscription = activeSubscriptions[0] ?? null;
 
     return createServiceResponse(
       200,
       'Active subscription fetched successfully',
       true,
       {
-        subscription: activeSubscription,
-        subscriptions: activeSubscriptions,
+        subscription: selectReportedSubscription(entitlement),
+        subscriptions: entitlement,
       }
     );
   }

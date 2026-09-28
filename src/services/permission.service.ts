@@ -17,6 +17,7 @@ import { User } from '../entities/User';
 import { UserRole } from '../entities/UserRole';
 import { Currency, UserRoleEnum } from '../types/enums';
 import {
+  AuthSubscriptionSummary,
   CompanyPermissionsContext,
   LoginPermissionsContext,
 } from '../types/permissions';
@@ -25,6 +26,7 @@ import { BaseService } from './base.service';
 import {
   aggregateSubscriptionState,
   EntitlementService,
+  selectReportedSubscription,
 } from './entitlement.service';
 
 interface CreatePermissionInput {
@@ -263,6 +265,33 @@ export class PermissionService extends BaseService {
   // ─────────────────────────────────────────────
   // UNIÓN DE PERMISOS DEL ENTITLEMENT
   // ─────────────────────────────────────────────
+
+  /**
+   * Una suscripción vigente tal y como la ve el payload de auth — issue #20.
+   *
+   * @remarks Los créditos se reportan **por suscripción** y no sueltos en el
+   * payload: un `remainingCredits` global no significa nada cuando el miembro
+   * sostiene dos Session Packs (ADR 0006).
+   *
+   * @param subscription - Suscripción vigente, con su plan populado.
+   * @returns La entrada de `subscriptions[]` que le corresponde.
+   */
+  private toAuthSubscriptionSummary(
+    subscription: Subscription
+  ): AuthSubscriptionSummary {
+    const plan = subscription.plan as Plan | undefined;
+
+    return {
+      id: subscription.id,
+      planId: plan?.id ?? null,
+      planName: plan?.name ?? null,
+      status: subscription.status,
+      endDate: subscription.currentPeriodEnd ?? subscription.trialEnd ?? null,
+      cancelAtPeriodEnd: subscription.cancelAtPeriodEnd ?? null,
+      remainingCredits: subscription.remainingCredits,
+      creditsTotal: subscription.creditsTotal ?? null,
+    };
+  }
 
   /**
    * Los permisos que un plan concede de verdad: los que están activos en ambos
@@ -671,6 +700,7 @@ export class PermissionService extends BaseService {
     if (user.isSuperAdmin) {
       return {
         hasActiveSubscription: false,
+        subscriptions: [],
         subscriptionState: SubscriptionAccessState.NONE,
         plan: null,
         permissions: [],
@@ -700,6 +730,21 @@ export class PermissionService extends BaseService {
 
       return {
         hasActiveSubscription: true,
+        // El coach no sostiene ninguna suscripción real: su entrada es
+        // sintética, igual que su plan, para que `subscriptions[]` y los
+        // escalares no se contradigan.
+        subscriptions: [
+          {
+            id: 'coach-free-sub',
+            planId: 'coach-free-plan',
+            planName: 'Plan de Entrenador',
+            status: SubscriptionStatus.ACTIVE,
+            endDate: null,
+            cancelAtPeriodEnd: null,
+            remainingCredits: null,
+            creditsTotal: null,
+          },
+        ],
         subscriptionState: SubscriptionAccessState.ACTIVE,
         plan: {
           id: 'coach-free-plan',
@@ -730,6 +775,7 @@ export class PermissionService extends BaseService {
       if (!adminSubscription) {
         return {
           hasActiveSubscription: false,
+          subscriptions: [],
           subscriptionState: SubscriptionAccessState.NONE,
           plan: null,
           permissions: [],
@@ -753,6 +799,7 @@ export class PermissionService extends BaseService {
 
       return {
         hasActiveSubscription: true,
+        subscriptions: [this.toAuthSubscriptionSummary(adminSubscription)],
         plan: {
           id: plan.id,
           name: plan.name,
@@ -786,10 +833,12 @@ export class PermissionService extends BaseService {
       user.id,
       companyId
     );
-    // Los escalares del payload siguen siendo singulares y deprecados: su
-    // resolución determinista sobre el conjunto es trabajo del issue #20. Aquí
-    // solo los permisos pasan a ser la unión.
-    const [subscription] = entitlement;
+    // `subscriptions[]` es la verdad del payload. Los escalares siguen ahí,
+    // deprecados, y resuelven con la regla determinista y estable de
+    // `selectReportedSubscription` (issue #20, ADR 0006): comprar un Session
+    // Pack no puede cambiar lo que muestra una app antigua.
+    // Non-null: el Entitlement no está vacío, se acaba de comprobar arriba.
+    const subscription = selectReportedSubscription(entitlement)!;
 
     // `hasActive` y `subscriptionState` se leen sobre el **conjunto**, no sobre
     // "la" suscripción (ADR 0006, decisiones 4 y 10): acceso general mientras el
@@ -803,6 +852,7 @@ export class PermissionService extends BaseService {
 
       return {
         hasActiveSubscription: false,
+        subscriptions: [],
         subscriptionState: aggregateSubscriptionState(
           entitlement,
           inactiveState.state
@@ -826,6 +876,9 @@ export class PermissionService extends BaseService {
 
     return {
       hasActiveSubscription: entitlement.length > 0,
+      subscriptions: entitlement.map(live =>
+        this.toAuthSubscriptionSummary(live)
+      ),
       plan: {
         id: plan.id,
         name: plan.name,
@@ -881,9 +934,10 @@ export class PermissionService extends BaseService {
 
     for (const companySubscriptions of byCompany.values()) {
       const permissions = await this.unitePlanPermissions(companySubscriptions);
-      // Los campos singulares (plan, estado, renovación) los resuelve el issue
-      // #20; hasta entonces son los de una suscripción del conjunto, como hoy.
-      const subscription = companySubscriptions[0];
+      // Los campos singulares (plan, estado, renovación) son una vista
+      // degradada del conjunto y resuelven con la misma regla determinista que
+      // los escalares del payload (issue #20).
+      const subscription = selectReportedSubscription(companySubscriptions)!;
       const plan = subscription.plan;
 
       companiesContext.push({

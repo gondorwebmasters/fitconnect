@@ -210,3 +210,61 @@ export function aggregateSubscriptionState(
 ): SubscriptionAccessState {
   return entitlement.length > 0 ? SubscriptionAccessState.ACTIVE : whenEmpty;
 }
+
+/**
+ * La suscripción del Entitlement que reportan los **escalares deprecados** del
+ * payload de auth (`planName`, `status`, `endDate`, `cancelAtPeriodEnd`,
+ * `remainingCredits`, `creditsTotal`) y el campo singular de
+ * `getActiveSubscription` — issue #20, ADR 0006.
+ *
+ * @remarks Gana la vigente **ilimitada**; en empate, o si ninguna lo es, la de
+ * `currentPeriodEnd` más lejano. La regla existe por **estabilidad**: comprar un
+ * Session Pack no puede cambiar lo que muestra una app antigua que solo sabe
+ * leer el singular. El desempate final por `id` no describe ninguna regla de
+ * negocio: solo impide que el orden en que llegue el conjunto decida.
+ *
+ * Los escalares son una vista degradada y no deben usarse para decidir nada: la
+ * verdad es el conjunto. Un `remainingCredits` global no significa nada cuando
+ * el miembro sostiene dos Session Packs.
+ *
+ * @param entitlement - Suscripciones vigentes del miembro.
+ * @returns La suscripción a reportar, o `null` si el Entitlement está vacío.
+ */
+export function selectReportedSubscription(
+  entitlement: Subscription[]
+): Subscription | null {
+  return entitlement.reduce<Subscription | null>(
+    (reported, candidate) =>
+      reported === null || outranks(candidate, reported) ? candidate : reported,
+    null
+  );
+}
+
+/** ¿Debe `candidate` desplazar a `reported` como suscripción reportada? */
+function outranks(candidate: Subscription, reported: Subscription): boolean {
+  if (isUnlimited(candidate) !== isUnlimited(reported)) {
+    return isUnlimited(candidate);
+  }
+
+  const byPeriodEnd = periodEndMs(candidate) - periodEndMs(reported);
+  if (byPeriodEnd !== 0) return byPeriodEnd > 0;
+
+  return candidate.id < reported.id;
+}
+
+/** Ilimitada = sin snapshot de créditos (plan temporal, no Session Pack). */
+function isUnlimited(subscription: Subscription): boolean {
+  return (
+    subscription.creditsTotal === null ||
+    subscription.creditsTotal === undefined
+  );
+}
+
+/**
+ * Fin del periodo en milisegundos; `-Infinity` si no hay ninguno, de modo que
+ * una suscripción sin fecha queda por detrás de cualquiera que la tenga.
+ */
+function periodEndMs(subscription: Subscription): number {
+  const end = subscription.currentPeriodEnd ?? subscription.trialEnd ?? null;
+  return end ? end.getTime() : -Infinity;
+}

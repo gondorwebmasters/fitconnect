@@ -90,7 +90,27 @@ type User {
     isSuperAdmin: Boolean
     activeCompanyId: ID
     isPending: Boolean
-    """Auth payload (login / getMe): { hasActive, subscriptionState, planName, status, isInTrial, trialEndsAt, startDate, endDate, cancelAtPeriodEnd, renewsAt, remainingCredits, creditsTotal }. remainingCredits y creditsTotal son null si el plan es ilimitado."""
+    """
+    Auth payload (login / getMe).
+
+    La verdad es **subscriptions**: una entrada por Subscription vigente del
+    miembro en la empresa activa, con sus propios { id, planId, planName,
+    status, endDate, cancelAtPeriodEnd, remainingCredits, creditsTotal }.
+    remainingCredits y creditsTotal son null si esa suscripcion es ilimitada.
+    Los creditos se leen **por suscripcion**: un remainingCredits global no
+    significa nada cuando el miembro sostiene dos Session Packs.
+
+    hasActive (el conjunto no esta vacio) y subscriptionState (agregado sobre
+    todo el conjunto) siguen siendo escalares y no estan deprecados.
+
+    DEPRECADOS: planName, status, isInTrial, trialEndsAt, startDate, endDate,
+    cancelAtPeriodEnd, renewsAt, remainingCredits y creditsTotal son una vista
+    singular del conjunto, conservada para apps antiguas. Resuelven de forma
+    determinista y estable: gana la vigente ilimitada y, en empate o si ninguna
+    lo es, la de periodo mas lejano — de modo que comprar un Session Pack no
+    cambia lo que muestran. No usarlos para decidir nada: leer subscriptions.
+    Ver ADR 0006.
+    """
     subscription: JSON
     permissions: [String]
 }
