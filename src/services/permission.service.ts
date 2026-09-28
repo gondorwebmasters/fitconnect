@@ -241,6 +241,10 @@ export class PermissionService extends BaseService {
    *
    * @remarks Delega en {@link EntitlementService}, el único dueño de la
    * pregunta (ADR 0006). Es el punto de partida de la unión de permisos.
+   *
+   * @param userId - Miembro cuyo Entitlement se consulta.
+   * @param companyId - Empresa en la que se consulta.
+   * @returns Las suscripciones vigentes; vacío si el Entitlement está vacío.
    */
   async getUserEntitlementInCompany(
     userId: string,
@@ -263,6 +267,9 @@ export class PermissionService extends BaseService {
   /**
    * Los permisos que un plan concede de verdad: los que están activos en ambos
    * lados de `PlanPermission`.
+   *
+   * @param plan - Plan con `planPermissions` ya populado o inicializado.
+   * @returns Los permisos concedidos por el plan.
    */
   private activePermissionsOfPlan(plan: Plan): Permission[] {
     return plan.planPermissions
@@ -310,6 +317,10 @@ export class PermissionService extends BaseService {
    * @remarks Las tres ramas de siempre, en un solo sitio: nombre exacto, el
    * comodín `*:*`, y `<módulo>:manage`, que implica cualquier acción de su
    * módulo. La unión no cambia cómo resuelven — solo de dónde sale el conjunto.
+   *
+   * @param grantedNames - Nombres de los permisos concedidos.
+   * @param permissionName - Permiso pedido, p. ej. `schedules:read`.
+   * @returns Si el conjunto concedido cubre el permiso pedido.
    */
   private grantsPermission(
     grantedNames: Set<string>,
@@ -510,12 +521,9 @@ export class PermissionService extends BaseService {
     );
     const userPermissionNames = new Set(userPermissions.map(p => p.name));
 
-    return permissionNames.every(name => {
-      if (userPermissionNames.has(name)) return true;
-      if (userPermissionNames.has('*:*')) return true;
-      const [module] = name.split(':');
-      return userPermissionNames.has(`${module}:manage`);
-    });
+    return permissionNames.every(name =>
+      this.grantsPermission(userPermissionNames, name)
+    );
   }
 
   async userHasAnyPermission(
@@ -529,12 +537,9 @@ export class PermissionService extends BaseService {
     );
     const userPermissionNames = new Set(userPermissions.map(p => p.name));
 
-    return permissionNames.some(name => {
-      if (userPermissionNames.has(name)) return true;
-      if (userPermissionNames.has('*:*')) return true;
-      const [module] = name.split(':');
-      return userPermissionNames.has(`${module}:manage`);
-    });
+    return permissionNames.some(name =>
+      this.grantsPermission(userPermissionNames, name)
+    );
   }
 
   /** @deprecated Use userHasPermissionInCompany */
@@ -869,8 +874,9 @@ export class PermissionService extends BaseService {
     const byCompany = new Map<string, Subscription[]>();
     for (const subscription of subscriptions) {
       const companyId = subscription.company.id;
-      if (!byCompany.has(companyId)) byCompany.set(companyId, []);
-      byCompany.get(companyId)!.push(subscription);
+      const soFar = byCompany.get(companyId) ?? [];
+      soFar.push(subscription);
+      byCompany.set(companyId, soFar);
     }
 
     for (const companySubscriptions of byCompany.values()) {

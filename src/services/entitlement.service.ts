@@ -65,7 +65,7 @@ export class EntitlementService extends BaseService {
     return em.findOne(
       Subscription,
       this.liveSubscriptionWhere(userId, companyId),
-      this.findOptions(companyId, options)
+      this.tenancyAwareFindOptions(companyId, options)
     );
   }
 
@@ -97,11 +97,20 @@ export class EntitlementService extends BaseService {
     return em.find(
       Subscription,
       this.liveSubscriptionWhere(userId, companyId),
-      this.findOptions(companyId, options)
+      this.tenancyAwareFindOptions(companyId, options)
     );
   }
 
-  /** Vigente = `ACTIVE`/`TRIALING` con el periodo pagado en curso ahora mismo. */
+  /**
+   * Vigente = `ACTIVE`/`TRIALING` con el periodo pagado en curso ahora mismo.
+   *
+   * @remarks El predicado vive aquí y no en cada lectura para que la singular y
+   * la plural no puedan divergir.
+   *
+   * @param userId - Miembro cuyo Entitlement se consulta.
+   * @param companyId - Empresa, si hay alguna en scope; sin ella no se filtra.
+   * @returns El `where` de la consulta.
+   */
   private liveSubscriptionWhere(userId: string, companyId?: string) {
     const now = moment().toDate();
 
@@ -116,8 +125,19 @@ export class EntitlementService extends BaseService {
     };
   }
 
-  /** `populate` del llamante + el bypass de tenencia cuando hay empresa. */
-  private findOptions(
+  /**
+   * Las opciones de la consulta: el `populate` del llamante más la decisión de
+   * tenencia.
+   *
+   * @remarks Con empresa explícita se salta el filtro `companyContext`
+   * (`filters: false`) para no depender del header de la request; sin empresa se
+   * deja actuar al filtro.
+   *
+   * @param companyId - Empresa, si hay alguna en scope.
+   * @param options - Opciones del llamante, de las que solo se lee `populate`.
+   * @returns Las opciones de `findOne`/`find`.
+   */
+  private tenancyAwareFindOptions(
     companyId: string | undefined,
     options: FindLiveSubscriptionOptions
   ) {

@@ -13,7 +13,7 @@ import { PermissionService } from '../permission.service';
  * No hay intersección, ni precedencia, ni permisos negativos: es una decisión
  * del ADR, no una simplificación pendiente de completar.
  */
-describe('PermissionService — la unión de permisos del Entitlement', () => {
+describe('PermissionService — the union of the Entitlement permissions', () => {
   let service: PermissionService;
   let mockEm: any;
   let entitlement: any[];
@@ -79,7 +79,7 @@ describe('PermissionService — la unión de permisos del Entitlement', () => {
   });
 
   describe('getUserPermissionsInCompany', () => {
-    it('unites the permissions of every live plan', async () => {
+    it('should unite the permissions of every live plan', async () => {
       entitlement = [
         subscriptionTo('sub-1', planGranting('premium', ['schedules:read'])),
         subscriptionTo('sub-2', planGranting('pack', ['workouts:read'])),
@@ -96,7 +96,7 @@ describe('PermissionService — la unión de permisos del Entitlement', () => {
       ]);
     });
 
-    it('never lets one plan remove what another grants', async () => {
+    it('should keep a permission when another plan in the set does not grant it', async () => {
       const generous = planGranting('premium', [
         'schedules:read',
         'workouts:read',
@@ -115,7 +115,7 @@ describe('PermissionService — la unión de permisos del Entitlement', () => {
       expect(permissions.map(p => p.name)).toContain('workouts:read');
     });
 
-    it('reports a permission granted by two plans only once', async () => {
+    it('should report a permission only once when two plans grant it', async () => {
       entitlement = [
         subscriptionTo('sub-1', planGranting('premium', ['schedules:read'])),
         subscriptionTo('sub-2', planGranting('pack', ['schedules:read'])),
@@ -129,7 +129,7 @@ describe('PermissionService — la unión de permisos del Entitlement', () => {
       expect(permissions.map(p => p.name)).toEqual(['schedules:read']);
     });
 
-    it('gives a member with one subscription exactly what they get today', async () => {
+    it('should give the permissions of the single plan when the member holds one subscription', async () => {
       entitlement = [
         subscriptionTo(
           'sub-1',
@@ -148,7 +148,7 @@ describe('PermissionService — la unión de permisos del Entitlement', () => {
       ]);
     });
 
-    it('ignores a plan permission that is inactive on either side', async () => {
+    it('should ignore a plan permission when it is inactive on either side', async () => {
       const plan = planGranting('premium', ['schedules:read']);
       plan.planPermissions.getItems = () => [
         {
@@ -174,7 +174,7 @@ describe('PermissionService — la unión de permisos del Entitlement', () => {
       expect(permissions.map(p => p.name)).toEqual(['schedules:read']);
     });
 
-    it('returns nothing when the Entitlement is empty', async () => {
+    it('should return nothing when the Entitlement is empty', async () => {
       entitlement = [];
 
       const permissions = await service.getUserPermissionsInCompany(
@@ -187,7 +187,7 @@ describe('PermissionService — la unión de permisos del Entitlement', () => {
   });
 
   describe('userHasPermissionInCompany', () => {
-    it('grants a permission that only the second plan carries', async () => {
+    it('should grant a permission when only the second plan carries it', async () => {
       entitlement = [
         subscriptionTo('sub-1', planGranting('premium', ['schedules:read'])),
         subscriptionTo('sub-2', planGranting('pack', ['workouts:read'])),
@@ -198,7 +198,7 @@ describe('PermissionService — la unión de permisos del Entitlement', () => {
       ).resolves.toBe(true);
     });
 
-    it('still resolves a module-level grant across the union', async () => {
+    it('should resolve a module-level grant when it comes from another plan in the set', async () => {
       entitlement = [
         subscriptionTo('sub-1', planGranting('premium', ['schedules:read'])),
         subscriptionTo('sub-2', planGranting('pack', ['workouts:manage'])),
@@ -209,7 +209,7 @@ describe('PermissionService — la unión de permisos del Entitlement', () => {
       ).resolves.toBe(true);
     });
 
-    it('still resolves the wildcard across the union', async () => {
+    it('should resolve the wildcard when it comes from another plan in the set', async () => {
       entitlement = [
         subscriptionTo('sub-1', planGranting('premium', ['schedules:read'])),
         subscriptionTo('sub-2', planGranting('legacy', ['*:*'])),
@@ -220,7 +220,7 @@ describe('PermissionService — la unión de permisos del Entitlement', () => {
       ).resolves.toBe(true);
     });
 
-    it('refuses a permission no plan in the Entitlement grants', async () => {
+    it('should refuse a permission when no plan in the Entitlement grants it', async () => {
       entitlement = [
         subscriptionTo('sub-1', planGranting('premium', ['schedules:read'])),
         subscriptionTo('sub-2', planGranting('pack', ['workouts:read'])),
@@ -231,7 +231,7 @@ describe('PermissionService — la unión de permisos del Entitlement', () => {
       ).resolves.toBe(false);
     });
 
-    it('refuses everything when the Entitlement is empty', async () => {
+    it('should refuse every permission when the Entitlement is empty', async () => {
       entitlement = [];
 
       await expect(
@@ -241,7 +241,7 @@ describe('PermissionService — la unión de permisos del Entitlement', () => {
   });
 
   describe('getLoginPermissionsContext', () => {
-    it('reports the union in permissionNames', async () => {
+    it('should report the union in permissionNames when several plans are live', async () => {
       entitlement = [
         subscriptionTo('sub-1', planGranting('premium', ['schedules:read'])),
         subscriptionTo('sub-2', planGranting('pack', ['workouts:read'])),
@@ -259,7 +259,7 @@ describe('PermissionService — la unión de permisos del Entitlement', () => {
       ]);
     });
 
-    it('leaves the deprecated singular scalars on one subscription of the set', async () => {
+    it('should leave the deprecated singular scalars on one subscription of the set', async () => {
       const sub = subscriptionTo(
         'sub-1',
         planGranting('premium', ['schedules:read']),
@@ -277,7 +277,7 @@ describe('PermissionService — la unión de permisos del Entitlement', () => {
       expect(ctx.renewsAt).toEqual(sub.currentPeriodEnd);
     });
 
-    it('does not derive a member union for a coach', async () => {
+    it('should not derive a member union when the user is a coach', async () => {
       userRole = { role: UserRoleEnum.COACH } as any;
       entitlement = [
         subscriptionTo('sub-1', planGranting('premium', ['payments:manage'])),
@@ -289,7 +289,7 @@ describe('PermissionService — la unión de permisos del Entitlement', () => {
       expect(ctx.permissionNames).not.toContain('payments:manage');
     });
 
-    it('does not derive a member union for a super-admin', async () => {
+    it('should not derive a member union when the user is a super-admin', async () => {
       user.isSuperAdmin = true;
       entitlement = [
         subscriptionTo('sub-1', planGranting('premium', ['schedules:read'])),
@@ -302,7 +302,7 @@ describe('PermissionService — la unión de permisos del Entitlement', () => {
   });
 
   describe('getUserCompaniesWithPermissions', () => {
-    it('reports one entry per company with the union of its plans', async () => {
+    it('should report one entry per company with the union of its plans', async () => {
       const company = { id: 'comp-1', name: 'Gym' };
       mockEm.find = jest.fn(async (entity: any) => {
         if (entity === Subscription) {
@@ -330,7 +330,7 @@ describe('PermissionService — la unión de permisos del Entitlement', () => {
       ]);
     });
 
-    it('keeps companies apart: a plan in one company grants nothing in another', async () => {
+    it('should grant nothing in another company when a plan is held in one', async () => {
       const first = { id: 'comp-1', name: 'Gym One' };
       const second = { id: 'comp-2', name: 'Gym Two' };
       mockEm.find = jest.fn(async (entity: any) => {
