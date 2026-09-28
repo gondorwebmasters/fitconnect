@@ -38,23 +38,23 @@ dotenv.config();
 
 /**
  * `Schedule.planAccess` es derivado **por llamante**, así que una lista de N
- * schedules restringidos resolvería N veces la misma suscripción. El `context`
+ * schedules restringidos resolvería N veces el mismo Entitlement. El `context`
  * vive exactamente lo que la petición: memorizamos ahí la promesa y todos los
  * schedules de esa petición comparten una sola consulta.
  *
  * @param context - Contexto de la petición GraphQL.
- * @param scheduleService - Servicio que sabe resolver la suscripción vigente.
- * @returns La suscripción vigente del llamante, o `null` si no tiene.
+ * @param scheduleService - Servicio que sabe resolver el Entitlement.
+ * @returns Las suscripciones vigentes del llamante; vacío si no tiene ninguna.
  */
-const getLiveSubscription = (
+const getEntitlement = (
   context: ContextProps,
   scheduleService: ScheduleService
-): Promise<Subscription | null> => {
-  context.liveSubscription ??= scheduleService.findLiveSubscription(
+): Promise<Subscription[]> => {
+  context.entitlement ??= scheduleService.findLiveSubscriptions(
     context.currentUser
   );
 
-  return context.liveSubscription;
+  return context.entitlement;
 };
 
 /**
@@ -85,7 +85,7 @@ const planAccess = async (
   return await scheduleService.getSchedulePlanAccess(
     context.currentUser,
     schedule,
-    () => getLiveSubscription(context, scheduleService)
+    () => getEntitlement(context, scheduleService)
   );
 };
 

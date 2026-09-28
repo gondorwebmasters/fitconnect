@@ -80,21 +80,27 @@ function futureSubscription(plan: any, userId = 'user-1'): any {
   };
 }
 
-/** Reproduce el filtrado que hace la query real sobre las suscripciones. */
-function matchSubscription(subscriptions: any[], where: any): any {
+/**
+ * Reproduce el filtrado que hace la query real sobre las suscripciones: el
+ * **Entitlement** del miembro, todas las que estén vigentes ahora mismo.
+ */
+function matchSubscriptions(subscriptions: any[], where: any): any[] {
   const from = where.currentPeriodStart?.$lte;
   const to = where.currentPeriodEnd?.$gte;
 
-  return (
-    subscriptions.find(
-      sub =>
-        sub.user === where.user &&
-        sub.company === where.company &&
-        where.status.$in.includes(sub.status) &&
-        (!from || sub.currentPeriodStart <= from) &&
-        (!to || sub.currentPeriodEnd >= to)
-    ) ?? null
+  return subscriptions.filter(
+    sub =>
+      sub.user === where.user &&
+      sub.company === where.company &&
+      where.status.$in.includes(sub.status) &&
+      (!from || sub.currentPeriodStart <= from) &&
+      (!to || sub.currentPeriodEnd >= to)
   );
+}
+
+/** La lectura singular de ese mismo conjunto (el crédito, ADR 0004). */
+function matchSubscription(subscriptions: any[], where: any): any {
+  return matchSubscriptions(subscriptions, where)[0] ?? null;
 }
 
 describe('ScheduleService — Restricted Schedule (plan restriction)', () => {
@@ -160,6 +166,9 @@ describe('ScheduleService — Restricted Schedule (plan restriction)', () => {
         if (entity === Subscription) return findSubscription(where);
         return null;
       }),
+      find: jest.fn(async (entity: any, where: any) =>
+        entity === Subscription ? matchSubscriptions(subscriptions, where) : []
+      ),
       persist: jest.fn(),
       remove: jest.fn(),
       flush: jest.fn(async () => {}),
@@ -213,6 +222,40 @@ describe('ScheduleService — Restricted Schedule (plan restriction)', () => {
 
       expect(response.success).toBe(true);
       expect(schedule.users.getItems()).toHaveLength(1);
+    });
+
+    // El Entitlement es un conjunto (ADR 0006): el gate pregunta si **alguna**
+    // de las suscripciones vigentes es a un plan admitido, no si "la" del
+    // miembro lo es. Nada permite todavía sostener dos a la vez (#22), pero la
+    // regla ya se lee sobre el conjunto.
+    it('should register the member when one of several live subscriptions is to an allowed plan', async () => {
+      restrictTo(PREMIUM_PLAN);
+      subscriptions = [
+        liveSubscription(BASIC_PLAN),
+        liveSubscription(PREMIUM_PLAN),
+      ];
+
+      const response = await scheduleService.addUserToSchedule(
+        buildCurrentUser(),
+        'sch-1'
+      );
+
+      expect(response.success).toBe(true);
+      expect(schedule.users.getItems()).toHaveLength(1);
+    });
+
+    it('should refuse the member when none of their live subscriptions is to an allowed plan', async () => {
+      restrictTo(PREMIUM_PLAN);
+      subscriptions = [
+        liveSubscription(BASIC_PLAN),
+        liveSubscription(UNLIMITED_PLAN),
+      ];
+
+      await expect(
+        scheduleService.addUserToSchedule(buildCurrentUser(), 'sch-1')
+      ).rejects.toThrow(VAL_ERRORS.PLAN_NOT_ALLOWED_IN_SCHEDULE);
+
+      expect(schedule.users.getItems()).toHaveLength(0);
     });
 
     it('should refuse the member when their live plan is not in the allowed set', async () => {
@@ -474,6 +517,23 @@ describe('ScheduleService — Restricted Schedule (plan restriction)', () => {
       expect(access.requiredPlans).toEqual([PREMIUM_PLAN, UNLIMITED_PLAN]);
     });
 
+    it('should report registrable when one of several live subscriptions qualifies', async () => {
+      restrictTo(PREMIUM_PLAN);
+      subscriptions = [
+        liveSubscription(BASIC_PLAN),
+        liveSubscription(PREMIUM_PLAN),
+      ];
+
+      const access = await scheduleService.getSchedulePlanAccess(
+        buildCurrentUser(),
+        schedule
+      );
+
+      expect(access.canRegister).toBe(true);
+      expect(access.reason).toBeNull();
+      expect(access.requiredPlans).toEqual([PREMIUM_PLAN]);
+    });
+
     it('should report NO_LIVE_SUBSCRIPTION when the member has no live subscription', async () => {
       restrictTo(PREMIUM_PLAN);
 
@@ -713,6 +773,9 @@ describe('ScheduleService — Restricted Schedule on the Waitlist (promotion)', 
           return matchSubscription(subscriptions, where);
         return null;
       }),
+      find: jest.fn(async (entity: any, where: any) =>
+        entity === Subscription ? matchSubscriptions(subscriptions, where) : []
+      ),
       persist: jest.fn(),
       remove: jest.fn(),
       flush: jest.fn(async () => {}),
@@ -843,13 +906,19 @@ describe('ScheduleService — Restricted Schedule on the Waitlist (promotion)', 
     const candidate = buildCandidate('user-candidate');
     waitlist(candidate);
     jest.spyOn(console, 'error').mockImplementation(() => {});
-    mockEntityManager.findOne.mockImplementation(
+    // Falla solo la consulta del Entitlement del candidato, que es la de
+    // elegibilidad; la del reembolso de quien deja la plaza va por `findOne` y
+    // tiene que seguir funcionando.
+    mockEntityManager.find.mockImplementation(
       async (entity: any, where: any) => {
-        // Solo la consulta de elegibilidad del candidato falla; la del
-        // reembolso de quien deja la plaza tiene que seguir funcionando.
         if (entity === Subscription && where.user === 'user-candidate') {
           throw new Error('connection reset');
         }
+        return [];
+      }
+    );
+    mockEntityManager.findOne.mockImplementation(
+      async (entity: any, where: any) => {
         if (entity === Subscription) return null;
         if (entity === User) return users[where.id] ?? null;
         if (entity === Company) return { scheduleOptions };

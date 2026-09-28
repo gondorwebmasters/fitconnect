@@ -134,7 +134,12 @@ export class EntitlementService extends BaseService {
  * esté en `ACTIVE`/`TRIALING` (ADR 0006, decisión 5). Una `PAST_DUE` no abre
  * ninguna puerta aunque el miembro conserve acceso general por otra.
  *
- * @remarks Devuelve la suscripción y no un booleano porque es la que pagará el
+ * @remarks El estado se comprueba aquí aunque hoy la consulta del Entitlement
+ * ya filtre por `ACTIVE`/`TRIALING`: la regla dice "esa suscripción está
+ * vigente", y quien la lee no debería tener que saber de dónde vino el
+ * conjunto. Si mañana el conjunto se amplía, la puerta sigue cerrada.
+ *
+ * Devuelve la suscripción y no un booleano porque es la que pagará el
  * **Session Credit** (ADR 0004). Cuando varias califiquen habrá que elegir
  * —gana la ilimitada—, pero eso es trabajo de #21; aquí vale la primera,
  * porque nada permite todavía sostener dos vigentes a la vez.

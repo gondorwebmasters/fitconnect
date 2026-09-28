@@ -12,10 +12,10 @@ export type ContextProps = {
   currentUser: CurrentUser;
   paymentProcessor: PaymentProcessor;
   /**
-   * Memo por petición de la suscripción vigente del llamante, para que el
-   * campo derivado `Schedule.planAccess` no la consulte una vez por schedule.
+   * Memo por petición del **Entitlement** del llamante, para que el campo
+   * derivado `Schedule.planAccess` no lo consulte una vez por schedule.
    */
-  liveSubscription?: Promise<Subscription | null>;
+  entitlement?: Promise<Subscription[]>;
 };
 
 export type UserProps = {

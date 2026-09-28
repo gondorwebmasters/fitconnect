@@ -36,7 +36,10 @@ import {
 } from '../utils/schedules.util';
 
 import { BaseService } from './base.service';
-import { EntitlementService } from './entitlement.service';
+import {
+  EntitlementService,
+  findAdmittingSubscription,
+} from './entitlement.service';
 import { NotificationService } from './notification.service';
 
 export type createScheduleDataType = {
@@ -1352,7 +1355,7 @@ export class ScheduleService extends BaseService {
       // Waitlist: entrar no consume, pero exige ≥ 1 crédito disponible; el
       // crédito se descuenta al promocionar (ADR 0004). Igual para todos los
       // roles, como el consumo en reserva real.
-      const subscription = await this.findLiveSubscriptionForUser(
+      const subscription = await this.findSubscriptionToCharge(
         user.id,
         currentUser.activeCompanyId
       );
@@ -1372,7 +1375,7 @@ export class ScheduleService extends BaseService {
       // en la M:N van en la misma transacción para no gastar un crédito sin
       // plaza (ni al revés).
       await this.em.transactional(async tem => {
-        const subscription = await this.findLiveSubscriptionForUser(
+        const subscription = await this.findSubscriptionToCharge(
           user.id,
           currentUser.activeCompanyId,
           tem
@@ -1431,48 +1434,69 @@ export class ScheduleService extends BaseService {
   }
 
   /**
-   * Suscripciones **vigentes ahora mismo** del llamante en su empresa activa.
+   * El **Entitlement** del llamante: todas sus suscripciones **vigentes ahora
+   * mismo** en su empresa activa.
    *
-   * @remarks Misma noción de "suscripción vigente" que usan login y
-   * `hasActive` (ver {@link findLiveSubscriptionForUser}). Una Suscripción
-   * Futura (periodo aún no empezado) no cuenta, aunque vaya a estar vigente el
-   * día de la clase — el gate mira el ahora, no la fecha de la clase (ADR 0005).
+   * @remarks Misma noción de "vigente" que usan login y `hasActive`: la
+   * define {@link EntitlementService}, que es quien consulta. Una Suscripción
+   * Futura (periodo aún no
+   * empezado) no cuenta, aunque vaya a estar vigente el día de la clase — el
+   * gate mira el ahora, no la fecha de la clase (ADR 0005).
    *
    * @param currentUser - Llamante autenticado.
-   * @returns La suscripción vigente, o `null` si no hay ninguna.
+   * @returns Las suscripciones vigentes; vacío si no tiene ninguna o no hay
+   * empresa activa.
    */
-  public async findLiveSubscription(
+  public async findLiveSubscriptions(
     currentUser: CurrentUser
-  ): Promise<Subscription | null> {
+  ): Promise<Subscription[]> {
     if (!currentUser?.id || !currentUser.activeCompanyId) {
-      return null;
+      return [];
     }
 
-    return await this.findLiveSubscriptionForUser(
+    return await this.findEntitlementForUser(
       currentUser.id,
       currentUser.activeCompanyId
     );
   }
 
   /**
-   * Igual que {@link findLiveSubscription}, pero para un usuario que **no es
-   * el llamante**, y la **única** consulta de "suscripción vigente" del
-   * servicio: la usan tanto la restricción de planes (ADR 0005) como el
-   * consumo y reembolso de Session Credits (ADR 0004).
+   * El Entitlement de un usuario que **no es el llamante**.
    *
    * @remarks Delega en {@link EntitlementService}, el único dueño de la
-   * pregunta "¿qué suscripciones de este miembro están vigentes?" (ADR 0006).
-   * Este servicio ya no reproduce la consulta: le pasa el `EntityManager`
-   * (posiblemente transaccional) y tolera que no haya empresa, que son las dos
-   * necesidades que en su día obligaron a duplicarla. No popula `plan`: la
-   * restricción solo compara ids.
+   * pregunta (ADR 0006). No popula `plan`: la restricción solo compara ids.
    *
-   * @param userId - Usuario cuya suscripción vigente se busca.
+   * @param userId - Usuario cuyo Entitlement se busca.
    * @param companyId - Empresa en la que se busca.
    * @param em - EntityManager (posiblemente transaccional) a usar.
-   * @returns La suscripción vigente ahora mismo, o `null`.
+   * @returns Las suscripciones vigentes ahora mismo.
    */
-  private async findLiveSubscriptionForUser(
+  private async findEntitlementForUser(
+    userId: string,
+    companyId: string | undefined,
+    em: EntityManager = this.em
+  ): Promise<Subscription[]> {
+    return this.entitlement.findLiveSubscriptions(userId, companyId, { em });
+  }
+
+  /**
+   * La suscripción a la que se carga un **Session Credit** (ADR 0004): una
+   * lectura **singular** del Entitlement.
+   *
+   * @remarks La restricción de planes ya no pasa por aquí — lee el conjunto
+   * entero ({@link findEntitlementForUser}). Esta lectura singular sobrevive
+   * solo para el crédito y desaparece con #21, que cobrará a la suscripción
+   * que abrió la puerta en vez de re-derivar una. Delega, como la plural, en
+   * {@link EntitlementService}: le pasa el `EntityManager` (posiblemente
+   * transaccional) y tolera que no haya empresa, las dos necesidades que en su
+   * día obligaron a duplicar la consulta. No popula `plan`.
+   *
+   * @param userId - Usuario cuya suscripción se busca.
+   * @param companyId - Empresa en la que se busca.
+   * @param em - EntityManager (posiblemente transaccional) a usar.
+   * @returns La suscripción a la que cargar el crédito, o `null`.
+   */
+  private async findSubscriptionToCharge(
     userId: string,
     companyId: string | undefined,
     em: EntityManager = this.em
@@ -1491,20 +1515,19 @@ export class ScheduleService extends BaseService {
    *
    * @param currentUser - Llamante que quiere inscribirse.
    * @param schedule - Schedule sobre el que se evalúa la restricción.
-   * @param resolveLiveSubscription - Cómo obtener la suscripción vigente del
-   * llamante. Por defecto la consulta; un resolver que evalúa muchos schedules
-   * del mismo llamante pasa aquí una versión memorizada, porque estos
-   * resolvers están limitados por latencia y la suscripción es la misma para
-   * toda la petición.
+   * @param resolveEntitlement - Cómo obtener el Entitlement del llamante. Por
+   * defecto lo consulta; un resolver que evalúa muchos schedules del mismo
+   * llamante pasa aquí una versión memorizada, porque estos resolvers están
+   * limitados por latencia y el Entitlement es el mismo para toda la petición.
    * @returns Si puede inscribirse, el motivo si no, y los planes exigidos.
    */
   public async getSchedulePlanAccess(
     currentUser: CurrentUser,
     schedule: Schedule,
-    resolveLiveSubscription: () => Promise<Subscription | null> = () =>
-      this.findLiveSubscription(currentUser)
+    resolveEntitlement: () => Promise<Subscription[]> = () =>
+      this.findLiveSubscriptions(currentUser)
   ): Promise<SchedulePlanAccess> {
-    return await this.evaluatePlanAccess(schedule, resolveLiveSubscription);
+    return await this.evaluatePlanAccess(schedule, resolveEntitlement);
   }
 
   /**
@@ -1514,14 +1537,20 @@ export class ScheduleService extends BaseService {
    * la promoción desde la lista de espera la evalúa para un candidato. La
    * regla es una sola y vive aquí.
    *
+   * La regla se lee sobre el **Entitlement entero**, no sobre "la"
+   * suscripción: admite si **alguna** de las vigentes es a un plan admitido y
+   * está ella misma en `ACTIVE`/`TRIALING` (ADR 0006, decisión 5). `hasActive`
+   * deja de ser el gate: tener acceso general por otra suscripción no abre
+   * esta puerta.
+   *
    * @param schedule - Schedule sobre el que se evalúa la restricción.
-   * @param resolveLiveSubscription - Cómo obtener la suscripción vigente de la
-   * persona que se evalúa. No se llama si el schedule no está restringido.
+   * @param resolveEntitlement - Cómo obtener el Entitlement de la persona que
+   * se evalúa. No se llama si el schedule no está restringido.
    * @returns Si puede inscribirse, el motivo si no, y los planes exigidos.
    */
   private async evaluatePlanAccess(
     schedule: Schedule,
-    resolveLiveSubscription: () => Promise<Subscription | null>
+    resolveEntitlement: () => Promise<Subscription[]>
   ): Promise<SchedulePlanAccess> {
     const requiredPlans = await this.getAllowedPlans(schedule);
 
@@ -1529,9 +1558,9 @@ export class ScheduleService extends BaseService {
       return { canRegister: true, reason: null, requiredPlans: [] };
     }
 
-    const subscription = await resolveLiveSubscription();
+    const entitlement = await resolveEntitlement();
 
-    if (!subscription) {
+    if (entitlement.length === 0) {
       return {
         canRegister: false,
         reason: SchedulePlanAccessReason.NO_LIVE_SUBSCRIPTION,
@@ -1539,12 +1568,12 @@ export class ScheduleService extends BaseService {
       };
     }
 
-    const livePlanId = (subscription.plan as Plan | undefined)?.id;
-    const isAllowed = requiredPlans.some(plan => plan.id === livePlanId);
+    const admitting = findAdmittingSubscription(entitlement, requiredPlans);
+    const canRegister = admitting !== null;
 
     return {
-      canRegister: isAllowed,
-      reason: isAllowed ? null : SchedulePlanAccessReason.PLAN_NOT_ALLOWED,
+      canRegister,
+      reason: canRegister ? null : SchedulePlanAccessReason.PLAN_NOT_ALLOWED,
       requiredPlans,
     };
   }
@@ -1652,7 +1681,7 @@ export class ScheduleService extends BaseService {
         // que devolver.
         const isBeforeStart = moment().isBefore(Number(schedule.startDate));
         if (isBeforeStart) {
-          const subscription = await this.findLiveSubscriptionForUser(
+          const subscription = await this.findSubscriptionToCharge(
             user.id,
             currentUser.activeCompanyId,
             tem
@@ -2290,7 +2319,7 @@ export class ScheduleService extends BaseService {
   ): Promise<void> {
     const companyId = schedule.company?.id;
     for (const user of schedule.users.getItems()) {
-      const subscription = await this.findLiveSubscriptionForUser(
+      const subscription = await this.findSubscriptionToCharge(
         user.id,
         companyId,
         em
@@ -2390,7 +2419,7 @@ export class ScheduleService extends BaseService {
     const access = await this.evaluatePlanAccess(
       schedule,
       async () =>
-        await this.findLiveSubscriptionForUser(user.id, schedule.company.id, em)
+        await this.findEntitlementForUser(user.id, schedule.company.id, em)
     );
 
     return access.canRegister;
@@ -2486,7 +2515,7 @@ export class ScheduleService extends BaseService {
         // Session Credit (ADR 0004): se consume aquí, no al entrar en la
         // lista. Sin créditos el candidato también sale y se prueba el
         // siguiente.
-        const subscription = await this.findLiveSubscriptionForUser(
+        const subscription = await this.findSubscriptionToCharge(
           user.id,
           schedule.company?.id,
           em
