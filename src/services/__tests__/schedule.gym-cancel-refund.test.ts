@@ -2,6 +2,7 @@ import moment from 'moment';
 
 import { Company } from '../../entities/Company';
 import { Schedule } from '../../entities/Schedule';
+import { ScheduleRegistration } from '../../entities/ScheduleRegistration';
 import { Subscription, SubscriptionStatus } from '../../entities/Subscription';
 import { User } from '../../entities/User';
 import { ScheduleState, UserRoleEnum } from '../../types/enums';
@@ -99,8 +100,14 @@ describe('ScheduleService — gym cancellation refunds session credits', () => {
     return schedule;
   }
 
-  function subscriptionQueries(): any[] {
-    return mockEm.findOne.mock.calls.filter((c: any[]) => c[0] === Subscription);
+  /**
+   * Consultas de la reserva. El reembolso ya no re-deriva la suscripción del
+   * miembro: lee la que quedó anotada al reservar (#21, ADR 0006 decisión 6).
+   */
+  function registrationQueries(): any[] {
+    return mockEm.findOne.mock.calls.filter(
+      (c: any[]) => c[0] === ScheduleRegistration
+    );
   }
 
   beforeEach(() => {
@@ -111,9 +118,19 @@ describe('ScheduleService — gym cancellation refunds session credits', () => {
       getRepository: jest.fn(() => mockScheduleRepo),
       findOne: jest.fn(async (entity: any, where: any) => {
         if (entity === Subscription) return subscriptionsByUser[where.user] ?? null;
+        if (entity === ScheduleRegistration) {
+          const paidBy = subscriptionsByUser[where.user] ?? null;
+          return paidBy ? { paidBySubscription: paidBy } : null;
+        }
         if (entity === Company) return { scheduleOptions: null };
         return null;
       }),
+      find: jest.fn(async (entity: any, where: any) => {
+        if (entity !== Subscription) return [];
+        const sub = subscriptionsByUser[where.user];
+        return sub ? [sub] : [];
+      }),
+      nativeUpdate: jest.fn(async () => 1),
       persist: jest.fn(),
       remove: jest.fn(),
       flush: jest.fn(async () => {}),
@@ -199,7 +216,7 @@ describe('ScheduleService — gym cancellation refunds session credits', () => {
       });
     });
 
-    it('looks up the live subscription of each member in the schedule company (ACTIVE/TRIALING, period in course)', async () => {
+    it('refunds to the subscription each registration records, not to a re-derived one', async () => {
       const u1 = buildUser('user-1');
       subscriptionsByUser['user-1'] = buildSubscription({ user: 'user-1' });
       const schedule = buildSchedule();
@@ -212,18 +229,11 @@ describe('ScheduleService — gym cancellation refunds session credits', () => {
         ScheduleState.CANCELLED
       );
 
-      const [, where, options] = subscriptionQueries()[0];
-      expect(where.user).toBe('user-1');
-      expect(where.company).toBe('comp-1');
-      expect(where.status.$in).toEqual(
-        expect.arrayContaining([
-          SubscriptionStatus.ACTIVE,
-          SubscriptionStatus.TRIALING,
-        ])
-      );
-      expect(where.currentPeriodStart).toBeDefined();
-      expect(where.currentPeriodEnd).toBeDefined();
-      expect(options).toEqual({ filters: false });
+      const [, where] = registrationQueries()[0];
+      expect(where).toEqual({ user: 'user-1', schedule: 'sch-1' });
+      expect(
+        mockEm.findOne.mock.calls.filter((c: any[]) => c[0] === Subscription)
+      ).toHaveLength(0);
     });
 
     it('does not refund a member without a live subscription (closed pack)', async () => {
@@ -434,7 +444,7 @@ describe('ScheduleService — gym cancellation refunds session credits', () => {
       const res = await service.removeSchedule(admin as any, 'sch-1');
 
       expect(res.success).toBe(true);
-      expect(subscriptionQueries()).toHaveLength(0);
+      expect(registrationQueries()).toHaveLength(0);
       expect(mockEm.execute).not.toHaveBeenCalled();
       expect(mockEm.remove).toHaveBeenCalledWith(schedule);
     });
@@ -479,16 +489,16 @@ describe('ScheduleService — gym cancellation refunds session credits', () => {
       expect(mockEm.flush).toHaveBeenCalled();
     });
 
-    it('scopes the subscription lookup to the schedule company (no request context in CRON)', async () => {
+    it('needs no request context to know who to refund (the registration says so)', async () => {
       const u1 = buildUser('user-1');
       subscriptionsByUser['user-1'] = buildSubscription({ user: 'user-1' });
       mockScheduleRepo.find.mockResolvedValue([cutOffCandidate([u1])]);
 
       await service.cutOffSchedules();
 
-      const [, where, options] = subscriptionQueries()[0];
-      expect(where.company).toBe('comp-1');
-      expect(options).toEqual({ filters: false });
+      const [, where] = registrationQueries()[0];
+      expect(where).toEqual({ user: 'user-1', schedule: 'sch-1' });
+      expect(subscriptionsByUser['user-1'].creditsUsed).toBe(1);
     });
 
     it('does not refund a closed pack and never goes below 0', async () => {

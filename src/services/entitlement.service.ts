@@ -149,38 +149,105 @@ export class EntitlementService extends BaseService {
 }
 
 /**
- * La suscripción del **Entitlement** que abre la puerta de un **Restricted
- * Schedule**: alguna cuyo plan esté entre los admitidos **y** que ella misma
- * esté en `ACTIVE`/`TRIALING` (ADR 0006, decisión 5). Una `PAST_DUE` no abre
- * ninguna puerta aunque el miembro conserve acceso general por otra.
+ * La suscripción del **Entitlement** que **paga** una reserva: la que abre la
+ * puerta del schedule (ADR 0006, decisiones 5 y 6).
  *
- * @remarks El estado se comprueba aquí aunque hoy la consulta del Entitlement
- * ya filtre por `ACTIVE`/`TRIALING`: la regla dice "esa suscripción está
- * vigente", y quien la lee no debería tener que saber de dónde vino el
- * conjunto. Si mañana el conjunto se amplía, la puerta sigue cerrada.
+ * @remarks Dos preguntas en una sola respuesta, porque son la misma: quién
+ * admite al miembro en este schedule y a quién se le carga el **Session
+ * Credit**. Separarlas fue el error que arregla #21 — re-derivar la
+ * suscripción al reembolsar devuelve el crédito a otra en cuanto hay más de
+ * una vigente.
  *
- * Devuelve la suscripción y no un booleano porque es la que pagará el
- * **Session Credit** (ADR 0004). Cuando varias califiquen habrá que elegir
- * —gana la ilimitada—, pero eso es trabajo de #21; aquí vale la primera,
- * porque nada permite todavía sostener dos vigentes a la vez.
+ * Candidata es la que está ella misma en `ACTIVE`/`TRIALING` —una `PAST_DUE` no
+ * abre ninguna puerta aunque el miembro conserve acceso general por otra— y
+ * cuyo plan admite el schedule. `requiredPlans` vacío ⇒ **Restricted Schedule**
+ * sin restricción: admiten todas, que es el caso de todo schedule preexistente.
+ *
+ * Entre varias candidatas **gana la ilimitada**: nunca se gasta un crédito en
+ * una clase a la que otra suscripción vigente ya da derecho gratis, que es
+ * exactamente el cobro que un miembro leería como un error de facturación. Solo
+ * si ninguna lo es se cobra a un **Session Pack**, y entre packs al que **antes
+ * caduca**, para no dejar créditos varados en uno que expira mientras se gastan
+ * los de otro que dura más. El desempate final por `id` no describe ninguna
+ * regla de negocio: solo impide que el orden en que llegue el conjunto decida.
+ *
+ * Un pack **sin créditos** sigue siendo candidata cuando no hay ninguna otra:
+ * la reserva debe fallar con `NO_SESSION_CREDITS`, no colarse gratis.
  *
  * @param entitlement - Suscripciones vigentes del miembro.
- * @param requiredPlans - Planes que admite el schedule.
- * @returns La suscripción que admite el schedule, o `null` si ninguna.
+ * @param requiredPlans - Planes que admite el schedule; vacío ⇒ sin restricción.
+ * @returns La suscripción que abre la puerta y paga, o `null` si ninguna.
  */
-export function findAdmittingSubscription(
+export function selectPayingSubscription(
   entitlement: Subscription[],
   requiredPlans: Plan[]
 ): Subscription | null {
-  return (
-    entitlement.find(
-      subscription =>
-        opensDoors(subscription) &&
-        requiredPlans.some(
-          plan => plan.id === (subscription.plan as Plan | undefined)?.id
-        )
-    ) ?? null
+  const candidates = entitlement.filter(
+    subscription =>
+      opensDoors(subscription) && admitsSchedule(subscription, requiredPlans)
   );
+
+  return candidates.reduce<Subscription | null>(
+    (payer, candidate) =>
+      payer === null || paysBefore(candidate, payer) ? candidate : payer,
+    null
+  );
+}
+
+/**
+ * ¿Admite esta suscripción el schedule? Sin planes exigidos, todas; con ellos,
+ * solo la suscrita a alguno.
+ */
+function admitsSchedule(
+  subscription: Subscription,
+  requiredPlans: Plan[]
+): boolean {
+  return (
+    requiredPlans.length === 0 ||
+    requiredPlans.some(
+      plan => plan.id === (subscription.plan as Plan | undefined)?.id
+    )
+  );
+}
+
+/** ¿Debe pagar `candidate` en lugar de `payer`? Ver {@link selectPayingSubscription}. */
+function paysBefore(candidate: Subscription, payer: Subscription): boolean {
+  if (isUnlimited(candidate) !== isUnlimited(payer)) {
+    return isUnlimited(candidate);
+  }
+
+  if (hasCreditLeft(candidate) !== hasCreditLeft(payer)) {
+    return hasCreditLeft(candidate);
+  }
+
+  const byExpiry = expiresAtMs(candidate) - expiresAtMs(payer);
+  if (byExpiry !== 0) return byExpiry < 0;
+
+  return candidate.id < payer.id;
+}
+
+/** ¿Le queda al menos un crédito? Ilimitada ⇒ siempre. */
+function hasCreditLeft(subscription: Subscription): boolean {
+  if (isUnlimited(subscription)) {
+    return true;
+  }
+
+  return (subscription.creditsUsed ?? 0) < (subscription.creditsTotal ?? 0);
+}
+
+/**
+ * Cuándo se acaba esta suscripción, en milisegundos, para ordenar **cuál se
+ * gasta antes**. Mismo fin de periodo que {@link periodEndOf} — también el de
+ * prueba, porque un bono en prueba caduca igual.
+ *
+ * @remarks El vacío va a `+Infinity`, al revés que en `periodEndMs`, y la
+ * diferencia es intencionada: allí se busca la que dura **más** y una sin fecha
+ * no puede ganar; aquí la que se acaba **antes**, y una sin fecha no puede
+ * gastarse la primera. Misma fecha, dos órdenes distintos.
+ */
+function expiresAtMs(subscription: Subscription): number {
+  const end = periodEndOf(subscription);
+  return end ? moment(end).valueOf() : Infinity;
 }
 
 /** ¿Abre puertas esta suscripción por sí misma? Solo `ACTIVE`/`TRIALING`. */
@@ -261,10 +328,26 @@ function isUnlimited(subscription: Subscription): boolean {
 }
 
 /**
+ * Hasta cuándo cubre una suscripción: el fin del periodo pagado y, si no lo
+ * hay, el fin del trial.
+ *
+ * @remarks Vive aquí, junto a la regla que lo usa para ordenar, porque el
+ * payload de auth reporta exactamente la misma fecha: una sola definición de
+ * "hasta cuándo" para que el `endDate` que ve el front y el desempate de
+ * {@link selectReportedSubscription} no puedan divergir.
+ *
+ * @param subscription - Suscripción a fechar.
+ * @returns El fin de la cobertura, o `null` si no tiene ninguna fecha.
+ */
+export function periodEndOf(subscription: Subscription): Date | null {
+  return subscription.currentPeriodEnd ?? subscription.trialEnd ?? null;
+}
+
+/**
  * Fin del periodo en milisegundos; `-Infinity` si no hay ninguno, de modo que
  * una suscripción sin fecha queda por detrás de cualquiera que la tenga.
  */
 function periodEndMs(subscription: Subscription): number {
-  const end = subscription.currentPeriodEnd ?? subscription.trialEnd ?? null;
-  return end ? end.getTime() : -Infinity;
+  const end = periodEndOf(subscription);
+  return end ? moment(end).valueOf() : -Infinity;
 }

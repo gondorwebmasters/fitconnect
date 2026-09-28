@@ -52,6 +52,8 @@ describe('ScheduleService - Waitlist and Booking Limits logic', () => {
     mockEntityManager = {
       getRepository: jest.fn(() => mockScheduleRepo),
       findOne: jest.fn(),
+      find: jest.fn(async () => []),
+      nativeUpdate: jest.fn(async () => 1),
       persist: jest.fn(),
       remove: jest.fn(),
       flush: jest.fn(async () => {}),

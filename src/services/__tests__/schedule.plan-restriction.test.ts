@@ -169,6 +169,7 @@ describe('ScheduleService — Restricted Schedule (plan restriction)', () => {
       find: jest.fn(async (entity: any, where: any) =>
         entity === Subscription ? matchSubscriptions(subscriptions, where) : []
       ),
+      nativeUpdate: jest.fn(async () => 1),
       persist: jest.fn(),
       remove: jest.fn(),
       flush: jest.fn(async () => {}),

@@ -6,7 +6,7 @@ import {
 import {
   aggregateSubscriptionState,
   EntitlementService,
-  findAdmittingSubscription,
+  selectPayingSubscription,
 } from '../entitlement.service';
 
 /**
@@ -202,13 +202,14 @@ function subscriptionTo(
 }
 
 /**
- * Tests de las reglas de acceso escritas sobre el conjunto — issue #18.
+ * Tests de las reglas de acceso escritas sobre el conjunto — issues #18 y #21.
  *
  * El gate de **Restricted Schedule** deja de mirar `hasActive` y pregunta si
  * *alguna suscripción concreta* del Entitlement admite el horario y está ella
- * misma en `ACTIVE`/`TRIALING` (ADR 0006, decisión 5).
+ * misma en `ACTIVE`/`TRIALING` (ADR 0006, decisión 5). Esa misma suscripción es
+ * la que paga el **Session Credit** (decisión 6): quien admite, paga.
  */
-describe('findAdmittingSubscription', () => {
+describe('selectPayingSubscription — quién abre la puerta', () => {
   const requiredPlans: any[] = [
     { id: 'plan-premium' },
     { id: 'plan-unlimited' },
@@ -217,14 +218,14 @@ describe('findAdmittingSubscription', () => {
   it('should return the subscription whose plan the schedule admits', () => {
     const admitted = subscriptionTo('plan-premium');
 
-    expect(findAdmittingSubscription([admitted], requiredPlans)).toBe(admitted);
+    expect(selectPayingSubscription([admitted], requiredPlans)).toBe(admitted);
   });
 
   it('should find the admitted subscription among several the member holds', () => {
     const admitted = subscriptionTo('plan-unlimited');
 
     expect(
-      findAdmittingSubscription(
+      selectPayingSubscription(
         [subscriptionTo('plan-basic'), admitted],
         requiredPlans
       )
@@ -233,12 +234,12 @@ describe('findAdmittingSubscription', () => {
 
   it('should return null when no subscription is to an admitted plan', () => {
     expect(
-      findAdmittingSubscription([subscriptionTo('plan-basic')], requiredPlans)
+      selectPayingSubscription([subscriptionTo('plan-basic')], requiredPlans)
     ).toBeNull();
   });
 
   it('should return null for an empty Entitlement', () => {
-    expect(findAdmittingSubscription([], requiredPlans)).toBeNull();
+    expect(selectPayingSubscription([], requiredPlans)).toBeNull();
   });
 
   it('should admit a TRIALING subscription to an admitted plan', () => {
@@ -247,13 +248,13 @@ describe('findAdmittingSubscription', () => {
       SubscriptionStatus.TRIALING
     );
 
-    expect(findAdmittingSubscription([trialing], requiredPlans)).toBe(trialing);
+    expect(selectPayingSubscription([trialing], requiredPlans)).toBe(trialing);
   });
 
   it('should not let a PAST_DUE subscription open the door', () => {
     const pastDue = subscriptionTo('plan-premium', SubscriptionStatus.PAST_DUE);
 
-    expect(findAdmittingSubscription([pastDue], requiredPlans)).toBeNull();
+    expect(selectPayingSubscription([pastDue], requiredPlans)).toBeNull();
   });
 
   it('should keep a PAST_DUE subscription shut while another one keeps general access', () => {
@@ -262,7 +263,132 @@ describe('findAdmittingSubscription', () => {
       subscriptionTo('plan-premium', SubscriptionStatus.PAST_DUE),
     ];
 
-    expect(findAdmittingSubscription(entitlement, requiredPlans)).toBeNull();
+    expect(selectPayingSubscription(entitlement, requiredPlans)).toBeNull();
+  });
+});
+
+/** Session Pack del Entitlement: plan, créditos y fin de periodo. */
+function packTo(
+  planId: string,
+  credits: { total: number; used?: number },
+  periodEnd?: Date
+): any {
+  return {
+    id: `pack-${planId}`,
+    plan: { id: planId },
+    status: SubscriptionStatus.ACTIVE,
+    creditsTotal: credits.total,
+    creditsUsed: credits.used ?? 0,
+    currentPeriodEnd: periodEnd,
+  };
+}
+
+/**
+ * Quién **paga** la reserva — issue #21, ADR 0006 decisión 6.
+ *
+ * Entre las que abren la puerta gana la ilimitada: nunca se gasta un crédito en
+ * una clase a la que otra suscripción vigente ya da derecho gratis.
+ */
+describe('selectPayingSubscription — quién paga', () => {
+  const unrestricted: any[] = [];
+
+  it('should charge the unlimited subscription when both qualify', () => {
+    const unlimited = subscriptionTo('plan-premium');
+    const pack = packTo('plan-premium', { total: 10 });
+
+    expect(
+      selectPayingSubscription(
+        [pack, unlimited],
+        [{ id: 'plan-premium' } as any]
+      )
+    ).toBe(unlimited);
+  });
+
+  it('should cost nothing on an unrestricted schedule to a member who also holds a pack', () => {
+    const unlimited = subscriptionTo('plan-premium');
+    const pack = packTo('plan-pack', { total: 10 });
+
+    expect(selectPayingSubscription([pack, unlimited], unrestricted)).toBe(
+      unlimited
+    );
+  });
+
+  it('should charge the pack when it is the only subscription admitting the schedule', () => {
+    const unlimited = subscriptionTo('plan-premium');
+    const pack = packTo('plan-pack', { total: 10 });
+
+    expect(
+      selectPayingSubscription([unlimited, pack], [{ id: 'plan-pack' } as any])
+    ).toBe(pack);
+  });
+
+  it('should let every live subscription qualify on an unrestricted schedule', () => {
+    const pack = packTo('plan-pack', { total: 10 });
+
+    expect(selectPayingSubscription([pack], unrestricted)).toBe(pack);
+  });
+
+  it('should return null on an unrestricted schedule for an empty Entitlement', () => {
+    expect(selectPayingSubscription([], unrestricted)).toBeNull();
+  });
+
+  it('should not let a PAST_DUE subscription pay for an unrestricted schedule', () => {
+    const pastDue = subscriptionTo('plan-premium', SubscriptionStatus.PAST_DUE);
+
+    expect(selectPayingSubscription([pastDue], unrestricted)).toBeNull();
+  });
+
+  it('should prefer a pack with credits left over an exhausted one', () => {
+    const exhausted = packTo('plan-a', { total: 10, used: 10 });
+    const withCredits = packTo('plan-b', { total: 10, used: 3 });
+
+    expect(
+      selectPayingSubscription([exhausted, withCredits], unrestricted)
+    ).toBe(withCredits);
+  });
+
+  it('should spend the pack that expires first so no credit is stranded', () => {
+    const later = packTo('plan-a', { total: 10 }, new Date('2026-12-31'));
+    const sooner = packTo('plan-b', { total: 10 }, new Date('2026-10-31'));
+
+    expect(selectPayingSubscription([later, sooner], unrestricted)).toBe(
+      sooner
+    );
+  });
+
+  it('should order a trialing pack by its trial end, which is when it really expires', () => {
+    const trialing = {
+      ...packTo('plan-trial', { total: 10 }),
+      status: SubscriptionStatus.TRIALING,
+      currentPeriodEnd: undefined,
+      trialEnd: new Date('2026-10-01'),
+    };
+    const later = packTo('plan-b', { total: 10 }, new Date('2026-12-31'));
+
+    expect(selectPayingSubscription([later, trialing], unrestricted)).toBe(
+      trialing
+    );
+  });
+
+  it('should still pick an exhausted pack when it is the only one, so the booking is refused', () => {
+    const exhausted = packTo('plan-pack', { total: 10, used: 10 });
+
+    expect(selectPayingSubscription([exhausted], unrestricted)).toBe(exhausted);
+  });
+
+  it('should not let the order of the Entitlement decide between equal packs', () => {
+    const a = packTo('plan-a', { total: 10 }, new Date('2026-12-31'));
+    const b = packTo('plan-b', { total: 10 }, new Date('2026-12-31'));
+
+    expect(selectPayingSubscription([a, b], unrestricted)).toBe(
+      selectPayingSubscription([b, a], unrestricted)
+    );
+  });
+
+  it('should charge the single subscription of a member who holds exactly one', () => {
+    const only = packTo('plan-pack', { total: 10 });
+
+    expect(selectPayingSubscription([only], unrestricted)).toBe(only);
   });
 });
 

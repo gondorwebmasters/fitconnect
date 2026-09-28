@@ -7,6 +7,7 @@ import { Plan } from '../entities/Plan';
 import { Schedule } from '../entities/Schedule';
 import { ScheduleOptions } from '../entities/ScheduleOptions';
 import { ScheduleProgrammed } from '../entities/ScheduleProgrammed';
+import { ScheduleRegistration } from '../entities/ScheduleRegistration';
 import { Subscription } from '../entities/Subscription';
 import { User } from '../entities/User';
 import { CurrentUser, ServiceResponse } from '../types/common.type';
@@ -38,7 +39,7 @@ import {
 import { BaseService } from './base.service';
 import {
   EntitlementService,
-  findAdmittingSubscription,
+  selectPayingSubscription,
 } from './entitlement.service';
 import { NotificationService } from './notification.service';
 
@@ -1357,7 +1358,8 @@ export class ScheduleService extends BaseService {
       // roles, como el consumo en reserva real.
       const subscription = await this.findSubscriptionToCharge(
         user.id,
-        currentUser.activeCompanyId
+        currentUser.activeCompanyId,
+        planAccess.requiredPlans
       );
       if (subscription && !this.hasSessionCreditAvailable(subscription)) {
         throw new ValidationError(VAL_ERRORS.NO_SESSION_CREDITS);
@@ -1378,6 +1380,7 @@ export class ScheduleService extends BaseService {
         const subscription = await this.findSubscriptionToCharge(
           user.id,
           currentUser.activeCompanyId,
+          planAccess.requiredPlans,
           tem
         );
         if (subscription) {
@@ -1411,6 +1414,11 @@ export class ScheduleService extends BaseService {
 
         tem.persist(schedule);
         await tem.flush();
+
+        // La reserva recuerda quién la pagó: sin eso, el reembolso tendría que
+        // re-derivar la suscripción y con más de una vigente devolvería el
+        // crédito a la equivocada.
+        await this.recordRegistrationCharge(schedule, user, subscription, tem);
       });
     }
 
@@ -1480,28 +1488,119 @@ export class ScheduleService extends BaseService {
   }
 
   /**
-   * La suscripción a la que se carga un **Session Credit** (ADR 0004): una
-   * lectura **singular** del Entitlement.
+   * La suscripción del Entitlement a la que se carga un **Session Credit** por
+   * reservar en este schedule: **la que abre la puerta** (ADR 0006, decisión 6).
    *
-   * @remarks La restricción de planes ya no pasa por aquí — lee el conjunto
-   * entero ({@link findEntitlementForUser}). Esta lectura singular sobrevive
-   * solo para el crédito y desaparece con #21, que cobrará a la suscripción
-   * que abrió la puerta en vez de re-derivar una. Delega, como la plural, en
-   * {@link EntitlementService}: le pasa el `EntityManager` (posiblemente
-   * transaccional) y tolera que no haya empresa, las dos necesidades que en su
-   * día obligaron a duplicar la consulta. No popula `plan`.
+   * @remarks La decisión no vive aquí sino en `selectPayingSubscription`, que es
+   * la misma regla que decide si el miembro entra: quien le admite es quien
+   * paga. Este método solo le pone delante el Entitlement, leído con el
+   * `EntityManager` que le pasen —transaccional dentro de una reserva, para ver
+   * el consumo que ella misma acaba de escribir.
    *
-   * @param userId - Usuario cuya suscripción se busca.
+   * No popula `plan`: comparar contra `requiredPlans` solo necesita ids.
+   *
+   * @param userId - Usuario cuya reserva se cobra.
    * @param companyId - Empresa en la que se busca.
+   * @param requiredPlans - Planes que admite el schedule; vacío ⇒ sin restricción.
    * @param em - EntityManager (posiblemente transaccional) a usar.
-   * @returns La suscripción a la que cargar el crédito, o `null`.
+   * @returns La suscripción a la que cargar el crédito, o `null` si ninguna.
    */
   private async findSubscriptionToCharge(
     userId: string,
     companyId: string | undefined,
+    requiredPlans: Plan[],
     em: EntityManager = this.em
   ): Promise<Subscription | null> {
-    return this.entitlement.findLiveSubscription(userId, companyId, { em });
+    const entitlement = await this.entitlement.findLiveSubscriptions(
+      userId,
+      companyId,
+      { em }
+    );
+
+    return selectPayingSubscription(entitlement, requiredPlans);
+  }
+
+  /**
+   * Deja escrito en la reserva **qué suscripción la pagó**.
+   *
+   * @remarks Hace flush antes de anotar porque la fila de la reserva no existe
+   * hasta que MikroORM la inserta, y la anotación es un UPDATE sobre ella. El
+   * orden lo impone esto y no cada llamante: olvidarlo no rompería nada visible
+   * —el UPDATE no encontraría fila— y el crédito se quedaría sin dueño. Va
+   * dentro de la misma transacción que el consumo, así que o se apuntan las dos
+   * cosas o ninguna.
+   *
+   * Se anota también la suscripción **ilimitada**, que no ha gastado crédito
+   * ninguno: la fila responde "quién abrió esta puerta", y esa respuesta vale
+   * igual para auditar que para reembolsar.
+   *
+   * @param schedule - Schedule reservado.
+   * @param user - Miembro que ocupa la plaza.
+   * @param subscription - Suscripción que pagó, o `null` si no hubo ninguna.
+   * @param em - EntityManager (posiblemente transaccional) a usar.
+   */
+  private async recordRegistrationCharge(
+    schedule: Schedule,
+    user: User,
+    subscription: Subscription | null,
+    em: EntityManager = this.em
+  ): Promise<void> {
+    if (!subscription) {
+      return;
+    }
+
+    await em.flush();
+    await em.nativeUpdate(
+      ScheduleRegistration,
+      { user: user.id, schedule: schedule.id },
+      { paidBySubscription: subscription.id }
+    );
+  }
+
+  /**
+   * La suscripción que pagó esta reserva, tal y como quedó anotada al hacerla.
+   *
+   * @remarks Es lo que sustituye a re-derivar el Entitlement al reembolsar
+   * (#21): con más de una vigente, re-derivar devuelve el crédito a la
+   * suscripción equivocada, y un crédito que aparece donde no debe solo se
+   * detecta cuando las cuentas ya no cuadran.
+   *
+   * Sin anotación no hay nada que devolver. Es el caso de las reservas
+   * anteriores a #21 — la migración comprueba que ninguna pudo pagar crédito
+   * alguno, porque no existía ningún **Session Pack** — y el de quien reservó
+   * sin suscripción vigente.
+   *
+   * Se lee **antes** de sacar al miembro de la colección: la fila desaparece
+   * con la reserva.
+   *
+   * **No** se comprueba que la suscripción siga vigente, y es deliberado: antes
+   * el reembolso re-derivaba el Entitlement y por eso un pack cerrado entre la
+   * reserva y la baja se quedaba el crédito. Quien pagó, cobra — aunque su
+   * periodo ya haya terminado. Devolver un crédito a un pack cerrado no se lo
+   * regala a nadie (cerrado está y no se puede gastar) y deja las cuentas
+   * cuadradas, que es justamente lo que #21 viene a arreglar.
+   *
+   * `filters: false` por la misma razón que lo pasaba el código al que
+   * sustituye: el reembolso no puede depender del header de la request, y la
+   * propia reserva ya acota la empresa — es de un schedule que pertenece a una.
+   *
+   * @param schedule - Schedule reservado.
+   * @param userId - Miembro que ocupa la plaza.
+   * @param em - EntityManager (posiblemente transaccional) a usar.
+   * @returns La suscripción que pagó, o `null` si ninguna quedó anotada.
+   */
+  private async findRegistrationCharge(
+    schedule: Schedule,
+    userId: string,
+    em: EntityManager = this.em
+  ): Promise<Subscription | null> {
+    const registration = await em.findOne(
+      ScheduleRegistration,
+      { user: userId, schedule: schedule.id },
+      { populate: ['paidBySubscription'], filters: false }
+    );
+
+    return registration?.paidBySubscription ?? null;
   }
 
   /**
@@ -1568,7 +1667,7 @@ export class ScheduleService extends BaseService {
       };
     }
 
-    const admitting = findAdmittingSubscription(entitlement, requiredPlans);
+    const admitting = selectPayingSubscription(entitlement, requiredPlans);
     const canRegister = admitting !== null;
 
     return {
@@ -1673,27 +1772,28 @@ export class ScheduleService extends BaseService {
 
     if (schedule.users.contains(user)) {
       await this.em.transactional(async tem => {
+        // Quién pagó se lee **antes** de soltar la plaza: la anotación vive en
+        // la fila de la reserva y se va con ella.
+        const paidBy = await this.findRegistrationCharge(
+          schedule,
+          user.id,
+          tem
+        );
+
         schedule.users.remove(user);
 
         // Reembolso solo si la clase aún no ha empezado: desapuntarse después
-        // (o no acudir) pierde el crédito (ADR 0004). Se devuelve a la
-        // suscripción viva del miembro; si el pack ya está cerrado no hay nada
-        // que devolver.
+        // (o no acudir) pierde el crédito (ADR 0004). Se devuelve a la misma
+        // suscripción que lo gastó, no a una re-derivada (ADR 0006, decisión
+        // 6); si nadie pagó no hay nada que devolver.
         const isBeforeStart = moment().isBefore(Number(schedule.startDate));
-        if (isBeforeStart) {
-          const subscription = await this.findSubscriptionToCharge(
-            user.id,
-            currentUser.activeCompanyId,
+        if (isBeforeStart && paidBy) {
+          await this.refundSessionCredit(
+            paidBy,
+            schedule.id,
+            currentUser.id,
             tem
           );
-          if (subscription) {
-            await this.refundSessionCredit(
-              subscription,
-              schedule.id,
-              currentUser.id,
-              tem
-            );
-          }
         }
 
         // Si hay gente en la waitlist, meter al primero
@@ -2309,19 +2409,20 @@ export class ScheduleService extends BaseService {
    * Cancelación del schedule por parte del gym (manual, borrado o cut-off):
    * cada inscrito con pack recupera 1 crédito, **aunque la clase ya haya
    * pasado** — un crédito solo se pierde por decisión del propio miembro
-   * (ADR 0004). Sin suscripción viva no hay nada que devolver. Se filtra por la
-   * empresa del schedule y no por la request: el CRON no tiene contexto.
+   * (ADR 0004). Cada uno recupera el suyo en **la suscripción que lo pagó**, tal
+   * y como quedó anotada en su reserva (ADR 0006, decisión 6); quien no pagó
+   * nada no recibe nada. No hace falta empresa en contexto: la reserva ya dice
+   * a quién devolver, y el CRON no tiene contexto que dar.
    */
   private async refundScheduleCredits(
     schedule: Schedule,
     actorId: string,
     em: EntityManager = this.em
   ): Promise<void> {
-    const companyId = schedule.company?.id;
     for (const user of schedule.users.getItems()) {
-      const subscription = await this.findSubscriptionToCharge(
+      const subscription = await this.findRegistrationCharge(
+        schedule,
         user.id,
-        companyId,
         em
       );
       if (subscription) {
@@ -2518,6 +2619,7 @@ export class ScheduleService extends BaseService {
         const subscription = await this.findSubscriptionToCharge(
           user.id,
           schedule.company?.id,
+          await this.getAllowedPlans(schedule),
           em
         );
         if (subscription) {
@@ -2535,6 +2637,10 @@ export class ScheduleService extends BaseService {
 
         schedule.waitListUsers.remove(user);
         schedule.users.add(user);
+
+        // La plaza ya es suya: se apunta quién la paga, igual que en una
+        // reserva directa.
+        await this.recordRegistrationCharge(schedule, user, subscription, em);
 
         await this.sendWaitlistPromotionNotification(schedule, user, em);
 

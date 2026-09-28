@@ -123,8 +123,15 @@ miembro por entrar a una clase abierta a la que su otra suscripción ya le daba
 derecho gratis. Ese es exactamente el cobro que el miembro percibiría como un
 error, y ningún gimnasio quiere defenderlo por teléfono.
 
-**Persistir quién pagó.** Añade una tabla que antes no hacía falta. Se aceptó
-porque la alternativa —re-derivar la suscripción al desapuntarse, como se hace
-hoy— devuelve el crédito a la suscripción equivocada en cuanto hay más de una
-vigente, y un crédito que aparece donde no debe es un fallo silencioso que solo
-se detecta cuando las cuentas ya no cuadran.
+**Persistir quién pagó.** Obliga a dar entidad a la tabla pivote de las
+reservas (`user_schedules` → `ScheduleRegistration`), que hasta ahora era
+invisible, y a llevarle una columna más. Se aceptó porque la alternativa
+—re-derivar la suscripción al desapuntarse, como se hacía— devuelve el crédito a
+la suscripción equivocada en cuanto hay más de una vigente, y un crédito que
+aparece donde no debe es un fallo silencioso que solo se detecta cuando las
+cuentas ya no cuadran. Se eligió la pivote y no una tabla aparte porque quién
+pagó tiene que aparecer y desaparecer **con** la reserva; cualquier tabla propia
+podría desincronizarse de la pertenencia. Las reservas anteriores se quedan sin
+anotar y no hay nada que reconstruir: la migración **comprueba** que ninguna
+suscripción llevaba créditos —sin **Session Pack** ninguna reserva pudo pagar
+uno— y aborta si la asunción resulta falsa.

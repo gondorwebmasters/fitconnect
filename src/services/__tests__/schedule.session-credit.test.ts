@@ -2,6 +2,7 @@ import moment from 'moment';
 
 import { Company } from '../../entities/Company';
 import { Schedule } from '../../entities/Schedule';
+import { ScheduleRegistration } from '../../entities/ScheduleRegistration';
 import { Subscription, SubscriptionStatus } from '../../entities/Subscription';
 import { User } from '../../entities/User';
 import { ScheduleState, UserRoleEnum } from '../../types/enums';
@@ -106,8 +107,17 @@ describe('ScheduleService — Session Credits', () => {
         if (entity === User) return user;
         if (entity === Company) return { scheduleOptions };
         if (entity === Subscription) return subscription;
+        // La reserva recuerda quién la pagó (#21): el reembolso la lee en vez
+        // de re-derivar el Entitlement.
+        if (entity === ScheduleRegistration) {
+          return subscription ? { paidBySubscription: subscription } : null;
+        }
         return null;
       }),
+      find: jest.fn(async (entity: any) =>
+        entity === Subscription && subscription ? [subscription] : []
+      ),
+      nativeUpdate: jest.fn(async () => 1),
       persist: jest.fn(),
       flush: jest.fn(async () => {}),
       execute: jest.fn(),
@@ -260,7 +270,7 @@ describe('ScheduleService — Session Credits', () => {
 
       await service.addUserToSchedule(member as any, 'sch-1');
 
-      const call = mockEm.findOne.mock.calls.find(
+      const call = mockEm.find.mock.calls.find(
         (c: any[]) => c[0] === Subscription
       );
       expect(call).toBeDefined();
@@ -421,9 +431,9 @@ describe('ScheduleService — Session Credits', () => {
       await service.removeUserFromSchedule(admin as any, 'sch-1', 'user-1');
 
       const call = mockEm.findOne.mock.calls.find(
-        (c: any[]) => c[0] === Subscription
+        (c: any[]) => c[0] === ScheduleRegistration
       );
-      expect(call![1].user).toBe('user-1');
+      expect(call![1]).toEqual({ user: 'user-1', schedule: 'sch-1' });
       expect(subscription.creditsUsed).toBe(0);
       expect(subscription.metadata.history[0]).toMatchObject({
         event: 'credit_refunded',
@@ -559,7 +569,16 @@ describe('ScheduleService — Session Credits', () => {
         }
         if (entity === Company) return { scheduleOptions };
         if (entity === Subscription) return subsByUser[query.user] ?? null;
+        if (entity === ScheduleRegistration) {
+          const paidBy = subsByUser[query.user] ?? null;
+          return paidBy ? { paidBySubscription: paidBy } : null;
+        }
         return null;
+      });
+      mockEm.find.mockImplementation(async (entity: any, query: any) => {
+        if (entity !== Subscription) return [];
+        const sub = subsByUser[query.user];
+        return sub ? [sub] : [];
       });
     });
 

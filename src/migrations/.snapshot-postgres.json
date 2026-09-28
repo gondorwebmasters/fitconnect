@@ -7615,6 +7615,22 @@
           "comment": null,
           "enumItems": [],
           "mappedType": "uuid"
+        },
+        "paid_by_subscription_id": {
+          "name": "paid_by_subscription_id",
+          "type": "uuid",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "unique": false,
+          "length": null,
+          "precision": null,
+          "scale": null,
+          "default": null,
+          "comment": null,
+          "enumItems": [],
+          "mappedType": "uuid"
         }
       },
       "name": "user_schedules",
@@ -7659,6 +7675,19 @@
           ],
           "updateRule": "cascade",
           "deleteRule": "cascade"
+        },
+        "user_schedules_paid_by_subscription_id_foreign": {
+          "columnNames": [
+            "paid_by_subscription_id"
+          ],
+          "constraintName": "user_schedules_paid_by_subscription_id_foreign",
+          "localTableName": "public.user_schedules",
+          "referencedTableName": "public.subscription",
+          "referencedColumnNames": [
+            "id"
+          ],
+          "updateRule": "cascade",
+          "deleteRule": "set null"
         }
       },
       "nativeEnums": {},
