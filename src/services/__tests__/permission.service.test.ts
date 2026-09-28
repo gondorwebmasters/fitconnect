@@ -28,7 +28,7 @@ describe('PermissionService.getLoginPermissionsContext — remainingCredits', ()
         amount: 0,
         currency: 'eur',
         interval: 'month',
-        planPermissions: { getItems: () => [] },
+        planPermissions: { init: async () => {}, getItems: () => [] },
       },
       ...overrides,
     });
@@ -47,7 +47,14 @@ describe('PermissionService.getLoginPermissionsContext — remainingCredits', ()
         if (entity === Subscription) return activeSubscription;
         return null;
       }),
-      find: jest.fn(async () => []),
+      // El Entitlement se consulta en plural desde que los permisos son su
+      // unión (issue #19); con una suscripción el conjunto tiene un elemento.
+      find: jest.fn(async (entity: any) => {
+        if (entity === Subscription) {
+          return activeSubscription ? [activeSubscription] : [];
+        }
+        return [];
+      }),
       flush: jest.fn(async () => {}),
     };
 

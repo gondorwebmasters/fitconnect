@@ -22,7 +22,10 @@ import {
 } from '../types/permissions';
 
 import { BaseService } from './base.service';
-import { EntitlementService } from './entitlement.service';
+import {
+  aggregateSubscriptionState,
+  EntitlementService,
+} from './entitlement.service';
 
 interface CreatePermissionInput {
   module: PermissionModule;
@@ -233,6 +236,92 @@ export class PermissionService extends BaseService {
   }
 
   /**
+   * El Entitlement del miembro: **todas** sus suscripciones vigentes en la
+   * empresa, con plan y permisos del plan populados.
+   *
+   * @remarks Delega en {@link EntitlementService}, el único dueño de la
+   * pregunta (ADR 0006). Es el punto de partida de la unión de permisos.
+   */
+  async getUserEntitlementInCompany(
+    userId: string,
+    companyId: string
+  ): Promise<Subscription[]> {
+    return this.entitlement.findLiveSubscriptions(userId, companyId, {
+      populate: [
+        'plan',
+        'plan.planPermissions',
+        'plan.planPermissions.permission',
+        'plan.name',
+      ],
+    });
+  }
+
+  // ─────────────────────────────────────────────
+  // UNIÓN DE PERMISOS DEL ENTITLEMENT
+  // ─────────────────────────────────────────────
+
+  /**
+   * Los permisos que un plan concede de verdad: los que están activos en ambos
+   * lados de `PlanPermission`.
+   */
+  private activePermissionsOfPlan(plan: Plan): Permission[] {
+    return plan.planPermissions
+      .getItems()
+      .filter(pp => pp.isActive && pp.permission.isActive)
+      .map(pp => pp.permission);
+  }
+
+  /**
+   * La **unión** de los permisos de los planes de un Entitlement (ADR 0006,
+   * decisión 3): un plan nunca puede *quitar* acceso que otro concede.
+   *
+   * @remarks Sin intersección, sin precedencia y sin permisos negativos — es la
+   * decisión del ADR, no una simplificación pendiente. Por eso el orden del
+   * conjunto es irrelevante y el resultado no depende de él.
+   *
+   * Se deduplica por **nombre**: dos planes que conceden `schedules:read` lo
+   * reportan una vez. Con una sola suscripción el resultado es exactamente el
+   * de antes de la unión.
+   *
+   * @param subscriptions - El Entitlement, con los planes ya populados.
+   * @returns Los permisos concedidos por algún plan del conjunto.
+   */
+  private async unitePlanPermissions(
+    subscriptions: Subscription[]
+  ): Promise<Permission[]> {
+    const byName = new Map<string, Permission>();
+
+    for (const subscription of subscriptions) {
+      const plan = subscription.plan;
+      await plan.planPermissions.init();
+
+      for (const permission of this.activePermissionsOfPlan(plan)) {
+        if (!byName.has(permission.name))
+          byName.set(permission.name, permission);
+      }
+    }
+
+    return [...byName.values()];
+  }
+
+  /**
+   * Si un conjunto de permisos concedidos cubre el permiso pedido.
+   *
+   * @remarks Las tres ramas de siempre, en un solo sitio: nombre exacto, el
+   * comodín `*:*`, y `<módulo>:manage`, que implica cualquier acción de su
+   * módulo. La unión no cambia cómo resuelven — solo de dónde sale el conjunto.
+   */
+  private grantsPermission(
+    grantedNames: Set<string>,
+    permissionName: string
+  ): boolean {
+    if (grantedNames.has(permissionName)) return true;
+    if (grantedNames.has('*:*')) return true;
+    const [module] = permissionName.split(':');
+    return grantedNames.has(`${module}:manage`);
+  }
+
+  /**
    * Resuelve el estado de acceso de un miembro **sin** suscripción vigente en la
    * empresa: distingue entre SCHEDULED (tiene una Suscripción Futura que aún no
    * empieza), EXPIRED (tuvo alguna y ya no) y NONE (nunca tuvo).
@@ -338,22 +427,18 @@ export class PermissionService extends BaseService {
       });
     }
 
-    const subscription = await this.getUserActiveSubscriptionInCompany(
+    const entitlement = await this.getUserEntitlementInCompany(
       userId,
       companyId
     );
-    if (!subscription) return false;
+    if (entitlement.length === 0) return false;
 
-    const plan = subscription.plan;
-    await plan.planPermissions.init();
+    const granted = await this.unitePlanPermissions(entitlement);
 
-    return plan.planPermissions.getItems().some(pp => {
-      if (!pp.isActive || !pp.permission.isActive) return false;
-      if (pp.permission.name === permissionName) return true;
-      if (pp.permission.name === '*:*') return true;
-      const [module] = permissionName.split(':');
-      return pp.permission.name === `${module}:manage`;
-    });
+    return this.grantsPermission(
+      new Set(granted.map(p => p.name)),
+      permissionName
+    );
   }
 
   async getUserPermissionsInCompany(
@@ -386,19 +471,12 @@ export class PermissionService extends BaseService {
         .map(pp => pp.permission);
     }
 
-    const subscription = await this.getUserActiveSubscriptionInCompany(
+    const entitlement = await this.getUserEntitlementInCompany(
       userId,
       companyId
     );
-    if (!subscription) return [];
 
-    const plan = subscription.plan;
-    await plan.planPermissions.init();
-
-    return plan.planPermissions
-      .getItems()
-      .filter(pp => pp.isActive && pp.permission.isActive)
-      .map(pp => pp.permission);
+    return this.unitePlanPermissions(entitlement);
   }
 
   async getUserActiveSubscriptions(userId: string): Promise<Subscription[]> {
@@ -699,12 +777,20 @@ export class PermissionService extends BaseService {
       };
     }
 
-    const subscription = await this.getUserActiveSubscriptionInCompany(
+    const entitlement = await this.getUserEntitlementInCompany(
       user.id,
       companyId
     );
+    // Los escalares del payload siguen siendo singulares y deprecados: su
+    // resolución determinista sobre el conjunto es trabajo del issue #20. Aquí
+    // solo los permisos pasan a ser la unión.
+    const [subscription] = entitlement;
 
-    if (!subscription) {
+    // `hasActive` y `subscriptionState` se leen sobre el **conjunto**, no sobre
+    // "la" suscripción (ADR 0006, decisiones 4 y 10): acceso general mientras el
+    // Entitlement no esté vacío, y `ACTIVE` por encima de cualquier estado que
+    // dejen las no vigentes — vigente en un plan y caducado en otro es `ACTIVE`.
+    if (entitlement.length === 0) {
       const inactiveState = await this.resolveInactiveMemberSubscriptionState(
         user.id,
         companyId
@@ -712,7 +798,10 @@ export class PermissionService extends BaseService {
 
       return {
         hasActiveSubscription: false,
-        subscriptionState: inactiveState.state,
+        subscriptionState: aggregateSubscriptionState(
+          entitlement,
+          inactiveState.state
+        ),
         plan: null,
         permissions: [],
         permissionNames: [],
@@ -728,13 +817,10 @@ export class PermissionService extends BaseService {
     }
 
     const plan = subscription.plan;
-    const permissions = plan.planPermissions
-      .getItems()
-      .filter(pp => pp.isActive && pp.permission.isActive)
-      .map(pp => pp.permission);
+    const permissions = await this.unitePlanPermissions(entitlement);
 
     return {
-      hasActiveSubscription: true,
+      hasActiveSubscription: entitlement.length > 0,
       plan: {
         id: plan.id,
         name: plan.name,
@@ -742,7 +828,10 @@ export class PermissionService extends BaseService {
         currency: plan.currency,
         interval: plan.interval,
       },
-      subscriptionState: SubscriptionAccessState.ACTIVE,
+      subscriptionState: aggregateSubscriptionState(
+        entitlement,
+        SubscriptionAccessState.NONE
+      ),
       permissions,
       permissionNames: permissions.map(p => p.name),
       subscriptionStatus: subscription.status,
@@ -773,14 +862,23 @@ export class PermissionService extends BaseService {
     const subscriptions = await this.getUserActiveSubscriptions(userId);
     const companiesContext: CompanyPermissionsContext[] = [];
 
+    // Una entrada por empresa, no por suscripción: el Entitlement del miembro
+    // en esa empresa es el conjunto, y sus permisos son la unión (ADR 0006).
+    // La unión nunca cruza empresas — un plan de un gimnasio no concede nada en
+    // otro.
+    const byCompany = new Map<string, Subscription[]>();
     for (const subscription of subscriptions) {
-      const plan = subscription.plan;
-      await plan.planPermissions.init();
+      const companyId = subscription.company.id;
+      if (!byCompany.has(companyId)) byCompany.set(companyId, []);
+      byCompany.get(companyId)!.push(subscription);
+    }
 
-      const permissions = plan.planPermissions
-        .getItems()
-        .filter(pp => pp.isActive && pp.permission.isActive)
-        .map(pp => pp.permission);
+    for (const companySubscriptions of byCompany.values()) {
+      const permissions = await this.unitePlanPermissions(companySubscriptions);
+      // Los campos singulares (plan, estado, renovación) los resuelve el issue
+      // #20; hasta entonces son los de una suscripción del conjunto, como hoy.
+      const subscription = companySubscriptions[0];
+      const plan = subscription.plan;
 
       companiesContext.push({
         companyId: subscription.company.id,
