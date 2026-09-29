@@ -28,15 +28,17 @@ describe('SubscriptionService.createSubscription — backdated free subscription
 
   /**
    * Evalúa el where de un findOne(Subscription) contra existingSubs aplicando
-   * los mismos predicados que la query real (status $in, y la intersección de
-   * intervalos currentPeriodStart <= newEnd && currentPeriodEnd >= newStart).
-   * Así los tests ejercitan de verdad la exclusión de CANCELED y el cálculo de
+   * los mismos predicados que la query real (plan, status $in, y la
+   * intersección de intervalos currentPeriodStart <= newEnd &&
+   * currentPeriodEnd >= newStart). Así los tests ejercitan de verdad la
+   * exclusión de CANCELED, el alcance **por plan** y el cálculo de
    * solapamiento, en lugar de devolver un stub fijo.
    */
   function matchSubscription(where: any): any {
     return (
       existingSubs.find(s => {
         if (where.company && s.company !== where.company) return false;
+        if (where.plan && s.plan?.id !== where.plan.id) return false;
         if (where.status?.$in && !where.status.$in.includes(s.status)) {
           return false;
         }
@@ -173,6 +175,7 @@ describe('SubscriptionService.createSubscription — backdated free subscription
         {
           id: 'sub-canceled',
           company: 'comp-1',
+          plan: FREE_PLAN,
           status: SubscriptionStatus.CANCELED,
           currentPeriodStart: moment().subtract(20, 'days').toDate(),
           currentPeriodEnd: moment().add(10, 'days').toDate(),
@@ -198,6 +201,7 @@ describe('SubscriptionService.createSubscription — backdated free subscription
         {
           id: 'sub-old-active',
           company: 'comp-1',
+          plan: FREE_PLAN,
           status: SubscriptionStatus.ACTIVE,
           currentPeriodStart: moment().subtract(60, 'days').toDate(),
           currentPeriodEnd: moment().subtract(30, 'days').toDate(),
@@ -230,7 +234,7 @@ describe('SubscriptionService.createSubscription — backdated free subscription
       SubscriptionStatus.PAST_DUE,
       SubscriptionStatus.PAUSED,
     ])(
-      'rejects a backdate overlapping a %s subscription of the same user+company',
+      'rejects a backdate overlapping a %s subscription to the same plan',
       async status => {
         currentPlan = FREE_PLAN;
         const backdated = moment().subtract(10, 'days').startOf('day');
@@ -239,6 +243,7 @@ describe('SubscriptionService.createSubscription — backdated free subscription
           {
             id: 'sub-existing',
             company: 'comp-1',
+            plan: FREE_PLAN,
             status,
             currentPeriodStart: moment().subtract(5, 'days').toDate(),
             currentPeriodEnd: moment().add(5, 'days').toDate(),
@@ -334,6 +339,7 @@ describe('SubscriptionService.createSubscription — backdated free subscription
         {
           id: 'sub-x',
           company: 'comp-1',
+          plan: FREE_PLAN,
           status: SubscriptionStatus.ACTIVE,
           currentPeriodStart: moment().subtract(2, 'days').toDate(),
           currentPeriodEnd: moment().add(10, 'days').toDate(),

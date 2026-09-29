@@ -186,8 +186,8 @@ export class SubscriptionService extends BaseService {
    * @returns La suscripción añadida (201), o la **Suscripción Futura** que ya
    *   había a ese plan con su fecha nueva (200).
    * @throws ConflictError si el miembro ya sostiene una vigente a ese plan
-   *   (`USER_ALREADY_ACTIVE_IN_PLAN`) o ya tiene una **Suscripción Futura**
-   *   programada.
+   *   (`USER_ALREADY_ACTIVE_IN_PLAN`). Tener una **Suscripción Futura** a otro
+   *   plan no bloquea nada: las reglas de solape son por plan (decisión 8).
    * @throws BadRequestError si la fecha de inicio no le corresponde al plan
    *   (ver `validateStartDateForPlan`).
    */
@@ -276,27 +276,24 @@ export class SubscriptionService extends BaseService {
       plan
     );
 
-    // Solaparse con la vigente del mismo plan dejaría dos vigentes idénticas,
-    // que es lo que prohíbe la decisión 7 — se pida programando una futura
-    // nueva o moviendo la que ya hay.
-    if (live && start.isBefore(moment(live.currentPeriodEnd), 'day')) {
+    // El inicio debe ser **estrictamente posterior** al fin de periodo de la
+    // vigente del mismo plan: empezar el mismo día dejaría dos vigentes
+    // idénticas durante esa jornada, que es lo que prohíbe la decisión 7 — se
+    // pida programando una futura nueva o moviendo la que ya hay.
+    if (live && !start.isAfter(moment(live.currentPeriodEnd), 'day')) {
       throw new ConflictError(CONFLICT_ERRORS.USER_ALREADY_ACTIVE_IN_PLAN);
     }
 
+    // Como máximo una Suscripción Futura **por plan** (decisión 8): la que ya
+    // hay a este plan se mueve, no se duplica. Una futura a otro plan no
+    // cuenta — tener un bono en cola no puede impedir encolar una membresía.
     if (scheduled) {
       return this.moveFutureSubscriptionStart(scheduled, plan, input);
     }
 
-    // Como máximo una Suscripción Futura por miembro. Solo gobierna a quien
-    // pide una futura: comprar para hoy nunca se bloquea por una futura ya
-    // programada. La regla sigue siendo por miembro y no por plan; escalarla
-    // al Entitlement es el issue #23.
-    if (companySubscriptions.some(s => this.isUnusedFutureSubscription(s))) {
-      throw new ConflictError(
-        CONFLICT_ERRORS.FUTURE_SUBSCRIPTION_ALREADY_SCHEDULED
-      );
-    }
-
+    // La futura releva a la vigente **del mismo plan**, que deja de renovar
+    // para no solaparse con ella. Ninguna otra suscripción del Entitlement se
+    // toca: encolar un bono no puede poner a cancelar la membresía.
     if (live) {
       live.cancelAtPeriodEnd = true;
       this.appendHistory(
@@ -1529,7 +1526,8 @@ export class SubscriptionService extends BaseService {
    *
    * La validez del período (que aún no haya transcurrido entero) ya la
    * garantizó validateStartDateForPlan(). Aquí solo queda la comprobación de
-   * colisión con otra entitlement activa del mismo usuario+empresa.
+   * colisión con otra suscripción **al mismo plan** del mismo usuario+empresa:
+   * una vigente a otro plan del Entitlement nunca bloquea (decisión 8).
    */
   private async createBackdatedSubscription(
     user: User,
@@ -1543,9 +1541,10 @@ export class SubscriptionService extends BaseService {
     const billingCompanyId =
       this.resolveBillingCompanyId(plan, input.companyId) ?? input.companyId;
 
-    await this.assertNoOverlappingEntitlement(
+    await this.assertNoOverlappingSubscriptionToPlan(
       user,
       billingCompanyId,
+      plan,
       backdatedStart,
       periodEnd
     );
@@ -1596,22 +1595,32 @@ export class SubscriptionService extends BaseService {
 
   /**
    * Rechaza el backdating si existe alguna suscripción del mismo
-   * usuario+empresa en estado ACTIVE/TRIALING/PAST_DUE/PAUSED cuyo período
-   * pagado [currentPeriodStart, currentPeriodEnd] se solape con el span
-   * completo de la nueva [start, end] (cola pasada y futura). Una suscripción
-   * CANCELED nunca bloquea (un miembro que renunció puede rellenar el hueco).
+   * usuario+empresa **y al mismo plan** en estado ACTIVE/TRIALING/PAST_DUE/
+   * PAUSED cuyo período pagado [currentPeriodStart, currentPeriodEnd] se
+   * solape con el span completo de la nueva [start, end] (cola pasada y
+   * futura). Una suscripción CANCELED nunca bloquea (un miembro que renunció
+   * puede rellenar el hueco).
+   *
+   * @remarks La pregunta es **por plan** (ADR 0006, decisión 8), no por
+   * Entitlement: lo que la regla protege es que nadie pague dos veces el mismo
+   * periodo del mismo plan. Una vigente a **otro** plan no describe ese riesgo
+   * y bloquearla impedía el caso normal —registrar un bono en efectivo a un
+   * miembro que ya tiene membresía—, que es justo para lo que existe la
+   * Suscripción Retroactiva.
    *
    * Dos intervalos [a1,a2] y [b1,b2] se solapan sii a1 <= b2 && b1 <= a2.
    */
-  private async assertNoOverlappingEntitlement(
+  private async assertNoOverlappingSubscriptionToPlan(
     user: User,
     companyId: string,
+    plan: Plan,
     newStart: Date,
     newEnd: Date
   ): Promise<void> {
     const overlapping = await this.em.findOne(Subscription, {
       user,
       company: companyId,
+      plan,
       status: {
         $in: [
           SubscriptionStatus.ACTIVE,

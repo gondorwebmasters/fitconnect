@@ -67,8 +67,6 @@ export const BAD_REQUEST_ERRORS = {
     'Paid subscriptions must start today: they can be scheduled neither in the past nor in the future',
   BACKDATED_PERIOD_ALREADY_ELAPSED:
     'Cannot backdate this subscription: the resulting period has already fully elapsed',
-  FUTURE_SUBSCRIPTION_ALREADY_SCHEDULED:
-    'There is already a future subscription scheduled for this user',
   SESSION_COUNT_MUST_BE_POSITIVE:
     'sessionCount must be a positive integer (or null for unlimited)',
   SESSION_PACK_CANNOT_HAVE_TRIAL:
@@ -89,8 +87,6 @@ export const BAD_REQUEST_ERRORS = {
 export const CONFLICT_ERRORS = {
   USER_ALREADY_ACTIVE_IN_PLAN:
     'User already has an active subscription to this plan',
-  FUTURE_SUBSCRIPTION_ALREADY_SCHEDULED:
-    'There is already a future subscription scheduled for this user',
   BACKDATED_OVERLAPS_EXISTING_ENTITLEMENT:
     'Cannot backdate this subscription: it overlaps an existing active entitlement for this user and company',
 } as const;
