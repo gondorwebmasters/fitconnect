@@ -31,6 +31,7 @@ The access rules are written over the set, not over "the" subscription:
 - The member's **permissions** are the **union** of the permissions of the plans in the Entitlement. A plan can never *remove* access another plan grants.
 - **Restricted Schedule** asks whether *some* subscription in the Entitlement admits the schedule; **Session Credit** is charged to that same one.
 - A member never holds **two live subscriptions to the same Plan** (`USER_ALREADY_ACTIVE_IN_PLAN`, enforced on both `createSubscription` and `changePlan`). Chaining two identical packs goes through a **Future Subscription**.
+- **Buying a plan adds one.** `createSubscription` always adds a subscription to the Entitlement: it no longer reads "another plan, starting today" as a plan change, so buying a **Session Pack** never costs the member their membership. Changing plan is `changePlan` — explicit, naming the subscription to migrate. This is a **breaking API change** for both fronts, which relied on the removed inference.
 - The API reports the set: the auth payload carries `subscriptions[]` (one entry per live subscription, with **its own** credits) and `getActiveSubscription` returns the whole Entitlement. Their singular fields are **deprecated** — see **Reported Subscription**.
 
 **Reported Subscription (Suscripción reportada)**:

@@ -139,8 +139,10 @@ describe('SubscriptionService — Session Pack', () => {
       expect(sub.creditsTotal).toBe(4);
       expect(sub.creditsUsed).toBe(0);
       expect(sub.cancelAtPeriodEnd).toBe(true);
-      // La actual queda marcada para no renovarse (comportamiento existente).
-      expect(current.cancelAtPeriodEnd).toBe(true);
+      // La vigente es a OTRO plan: ni se cancela ni se toca (ADR 0006,
+      // decisión 9). Solo se marca la del mismo plan al encadenar periodos.
+      expect(current.cancelAtPeriodEnd).toBe(false);
+      expect(current.plan).toBe(TIME_PLAN);
     });
 
     it('backdated (cash) subscription: snapshot is taken too', async () => {
@@ -232,13 +234,21 @@ describe('SubscriptionService — Session Pack', () => {
       expect(existingSubs[0].plan).toBe(TIME_PLAN);
     });
 
-    it('rejects the implicit plan change via createSubscription (active time plan → pack today)', async () => {
+    it('adds the pack instead of changing plan (active time plan → pack today)', async () => {
+      // createSubscription ya no reinterpreta "otro plan, inicio hoy" como
+      // cambio de plan (ADR 0006, decisión 9): el pack se añade y el plan
+      // temporal sigue vivo, que es justo el caso que forzó el Entitlement.
       currentPlan = PACK_PLAN;
-      existingSubs = [activeSubOn(TIME_PLAN)];
+      const timePlanSub = activeSubOn(TIME_PLAN);
+      existingSubs = [timePlanSub];
 
-      await expect(service.createSubscription(buildInput())).rejects.toThrow(
-        BAD_REQUEST_ERRORS.CANNOT_CHANGE_PLAN_WITH_SESSION_PACK
-      );
+      const response = await service.createSubscription(buildInput());
+
+      expect(response.code).toBe(201);
+      const sub = (response as any).subscription;
+      expect(sub.plan).toBe(PACK_PLAN);
+      expect(sub.creditsTotal).toBe(4);
+      expect(timePlanSub.plan).toBe(TIME_PLAN);
     });
   });
 });

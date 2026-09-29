@@ -129,12 +129,16 @@ const DUNNING_CONFIG = {
  *
  * Gestiona el ciclo de vida completo de las suscripciones.
  *
- * EL FRONTEND SOLO LLAMA A createSubscription. El backend decide
- * automaticamente si eso significa crear desde cero o sustituir una suscripcion
- * activa de otro plan en la misma empresa (lo que coloquialmente es "cambiar
- * de plan"). Nunca deberian coexistir dos Subscription en estado ACTIVE o
- * TRIALING para la misma empresa y el mismo usuario - ver
- * findActiveAndFutureSubscriptions() para la regla que lo garantiza.
+ * Crear y cambiar de plan son dos operaciones distintas y explícitas (ADR 0006,
+ * decisión 9): `createSubscription` **siempre añade** una suscripción al
+ * **Entitlement** del miembro —una vigente a otro plan se queda donde está— y
+ * `changePlan` migra la suscripción que se le nombre. El backend ya no infiere
+ * un cambio de plan a partir de "otro plan, inicio hoy".
+ *
+ * El único límite es que nunca coexistan dos suscripciones vigentes al **mismo
+ * plan** (decisión 7): haría ambiguo "cuántos créditos me quedan". Se rechaza
+ * en las dos rutas con `USER_ALREADY_ACTIVE_IN_PLAN`, y la forma de encadenar
+ * dos periodos del mismo plan es una **Suscripción Futura**.
  */
 export class SubscriptionService extends BaseService {
   private readonly entitlement: EntitlementService;
@@ -159,24 +163,23 @@ export class SubscriptionService extends BaseService {
   // ═══════════════════════════════════════════
 
   /**
-   * Crea una suscripción nueva. Punto de entrada único desde el frontend.
+   * Crea una suscripción nueva. Punto de entrada único desde el frontend para
+   * comprar un plan, y **siempre añade** (ADR 0006, decisión 9): lo que el
+   * miembro ya sostiene a otro plan no se migra ni se cancela. Cambiar de plan
+   * es otra operación, explícita, y se pide por `changePlan`.
    *
-   * El backend decide automáticamente qué significa "crear" según el
-   * estado actual del usuario respecto a la empresa del plan elegido:
+   * Lo que decide la fecha de inicio, ya con el plan cargado:
    *
-   *  1. Ya tiene una suscripción ACTIVE/TRIALING al MISMO plan
-   *       → ConflictError. No tiene sentido volver a asignarle la misma
-   *         suscripción que ya tiene activa.
+   *  1. Plan gratuito con inicio en el pasado → **Suscripción Retroactiva**.
    *
-   *  2. Ya tiene una suscripción ACTIVE/TRIALING a OTRO plan de la misma
-   *     empresa
-   *       → esto es un cambio de plan. Se delega a executePlanChange()
-   *         (el mismo núcleo que usa changePlan), que muta la suscripción
-   *         existente y aplica prorrateo si corresponde. No se crea una
-   *         entidad nueva.
+   *  2. Inicio hoy o sin fecha → se añade al **Entitlement**, salvo que el
+   *     miembro ya tenga una vigente a **ese mismo plan**
+   *     (`USER_ALREADY_ACTIVE_IN_PLAN`, decisión 7). Si lo que hay a ese plan
+   *     es una **Suscripción Futura**, se adelanta a hoy en vez de crear una
+   *     segunda.
    *
-   *  3. Ninguno de los casos anteriores
-   *       → se crea la suscripción desde cero.
+   *  3. Inicio en el futuro → **Suscripción Futura**, que es también la ruta
+   *     para encadenar dos periodos del mismo plan.
    */
   public async createSubscription(
     input: CreateSubscriptionInput
@@ -187,120 +190,161 @@ export class SubscriptionService extends BaseService {
     const plan = await this.getActivePlanOrFail(input.planId);
     this.validateStartDateForPlan(plan, input.startDate);
 
-    // ────────────────────────────────────────────────────────────────
-    // VERTIENTE 0: Suscripción Retroactiva (plan gratuito + inicio pasado)
-    // ────────────────────────────────────────────────────────────────
-    // Rama dedicada de cortocircuito: se salta el resto de la lógica
-    // (futura / cambio de plan / reemplazo de cancelada) para que la fecha
-    // de inicio retroactiva no pueda ser reescrita silenciosamente a hoy.
+    // Suscripción Retroactiva (plan gratuito + inicio pasado): rama de
+    // cortocircuito, para que la fecha retroactiva no pueda ser reescrita
+    // silenciosamente a hoy por el resto del flujo.
     if (this.isBackdatedFreeRequest(plan, input.startDate)) {
       return this.createBackdatedSubscription(user, plan, input);
     }
 
-    // Obtener todas las suscripciones de la empresa en estado ACTIVE o TRIALING
     const companySubscriptions = await this.findActiveAndFutureSubscriptions(
       user,
       plan
     );
+    const startsInFuture =
+      !!input.startDate && moment(input.startDate).isAfter(moment(), 'day');
 
-    // Clasificar las suscripciones en:
-    // - currentActive: Suscripción que está activa/vigente hoy
-    // - futureActive: Suscripción programada para empezar en el futuro
-    const currentActive = companySubscriptions.find(
-      s => !this.isUnusedFutureSubscription(s)
-    );
-    const futureActive = companySubscriptions.find(s =>
-      this.isUnusedFutureSubscription(s)
-    );
-
-    // ────────────────────────────────────────────────────────────────
-    // VERTIENTE 1: Ya existe una suscripción futura programada
-    // ────────────────────────────────────────────────────────────────
-    if (futureActive) {
-      const startInput = input.startDate ? moment(input.startDate) : moment();
-      const isFutureInput = startInput.isAfter(moment(), 'day');
-      const isImmediatePlanChange = currentActive && !isFutureInput;
-
-      if (!isImmediatePlanChange) {
-        // Si el plan coincide, permitimos actualizar su fecha de inicio
-        if (futureActive.plan.id === plan.id) {
-          // Validamos que el nuevo inicio no colisione con el período de la suscripción actual en curso
-          if (
-            currentActive &&
-            startInput.isBefore(moment(currentActive.currentPeriodEnd), 'day')
-          ) {
-            throw new ConflictError(
-              CONFLICT_ERRORS.USER_ALREADY_ACTIVE_IN_PLAN
-            );
-          }
-          await this.updateFutureSubscriptionDate(
-            futureActive,
-            plan,
-            input.startDate
-          );
-
-          return createServiceResponse(
-            200,
-            'Subscription start date updated successfully',
-            true,
-            { subscription: futureActive }
-          );
-        }
-
-        // No permitimos programar múltiples suscripciones futuras (evitamos solapamientos ilimitados)
-        throw new ConflictError(
-          CONFLICT_ERRORS.FUTURE_SUBSCRIPTION_ALREADY_SCHEDULED
-        );
-      }
+    if (startsInFuture) {
+      return this.scheduleFutureSubscription(
+        user,
+        plan,
+        input,
+        companySubscriptions
+      );
     }
 
-    // ────────────────────────────────────────────────────────────────
-    // VERTIENTE 2: Existe una suscripción en curso actualmente
-    // ────────────────────────────────────────────────────────────────
-    if (currentActive) {
-      if (input.startDate) {
-        const start = moment(input.startDate);
-        // CASO A: La fecha de inicio es posterior al período de la suscripción actual.
-        // Se programa la futura y se marca la actual para no renovarse automáticamente.
-        if (
-          start.isSameOrAfter(moment(currentActive.currentPeriodEnd), 'day')
-        ) {
-          currentActive.cancelAtPeriodEnd = true;
-          this.appendHistory(
-            currentActive,
-            'cancel_scheduled',
-            'system',
-            `Scheduled to cancel at period end due to future subscription starting on ${start.format('YYYY-MM-DD')}`
-          );
-          await this.em.flush();
+    const { live, scheduled } = this.findSubscriptionsToPlan(
+      companySubscriptions,
+      plan
+    );
 
-          return this.createSubscriptionFromScratch(user, plan, input);
-        } else {
-          // CASO B: La fecha es en el futuro pero solapa con el período activo actual
-          if (!start.isSame(moment(), 'day')) {
-            if (currentActive.plan.id === plan.id) {
-              throw new ConflictError(
-                CONFLICT_ERRORS.USER_ALREADY_ACTIVE_IN_PLAN
-              );
-            }
-            throw new BadRequestError(
-              BAD_REQUEST_ERRORS.CANNOT_SCHEDULE_PLAN_CHANGE_IN_FUTURE
-            );
-          }
-        }
-      }
-
-      // CASO C: Inicio hoy/inmediato. Se trata como cambio de plan normal de la suscripción activa
-      return this.resolveExistingActiveSubscription(currentActive, plan, input);
+    // Decisión 7: nunca dos vigentes al mismo plan — haría ambigua la
+    // pregunta "¿cuántos créditos me quedan?" e inventaría un orden de
+    // consumo entre dos bonos idénticos.
+    if (live) {
+      throw new ConflictError(CONFLICT_ERRORS.USER_ALREADY_ACTIVE_IN_PLAN);
     }
 
-    // ────────────────────────────────────────────────────────────────
-    // VERTIENTE 3: Ninguna suscripción activa ni futura — se crea desde cero.
-    // ────────────────────────────────────────────────────────────────
-    // (La antigua rama de "sustituir una cancelada con período pendiente" se
-    // eliminó: con la cancelación diferida-por-defecto una suscripción CANCELED
-    // nunca conserva un período vivo, así que era código muerto. Ver ADR 0003.)
+    // Lo que hay a este plan es una futura y el miembro la quiere ya: se
+    // adelanta la que hay, no se crea una segunda al mismo plan.
+    if (scheduled) {
+      return this.moveFutureSubscriptionStart(scheduled, plan, input);
+    }
+
     return this.createSubscriptionFromScratch(user, plan, input);
+  }
+
+  /**
+   * Programa una **Suscripción Futura**: la petición trae una fecha de inicio
+   * posterior a hoy.
+   *
+   * @remarks Solo alcanzable con planes gratuitos — `validateStartDateForPlan`
+   * obliga a los de pago a empezar hoy.
+   *
+   * Es también la ruta para **encadenar dos periodos del mismo plan**, la
+   * única forma de tener dos bonos iguales sin solaparlos: la nueva empieza
+   * cuando acaba la vigente, que deja de renovarse. Una fecha que solape con
+   * la vigente *del mismo plan* se rechaza (decisión 7); una vigente a otro
+   * plan ni estorba ni se toca.
+   *
+   * @param user - Miembro que compra.
+   * @param plan - Plan comprado, con `company` populada.
+   * @param input - Petición de creación, con `startDate` en el futuro.
+   * @param companySubscriptions - Suscripciones activas y futuras del miembro
+   *   en la empresa del plan.
+   * @returns La suscripción programada, o la ya existente con su fecha nueva.
+   */
+  private async scheduleFutureSubscription(
+    user: User,
+    plan: Plan,
+    input: CreateSubscriptionInput,
+    companySubscriptions: Subscription[]
+  ): Promise<ServiceResponse> {
+    const start = moment(input.startDate);
+    const { live, scheduled } = this.findSubscriptionsToPlan(
+      companySubscriptions,
+      plan
+    );
+
+    if (scheduled) {
+      if (live && start.isBefore(moment(live.currentPeriodEnd), 'day')) {
+        throw new ConflictError(CONFLICT_ERRORS.USER_ALREADY_ACTIVE_IN_PLAN);
+      }
+
+      return this.moveFutureSubscriptionStart(scheduled, plan, input);
+    }
+
+    // Como máximo una Suscripción Futura por miembro. La regla sigue siendo
+    // por miembro y no por plan; escalarla al Entitlement es el issue #23.
+    if (companySubscriptions.some(s => this.isUnusedFutureSubscription(s))) {
+      throw new ConflictError(
+        CONFLICT_ERRORS.FUTURE_SUBSCRIPTION_ALREADY_SCHEDULED
+      );
+    }
+
+    if (live) {
+      if (start.isBefore(moment(live.currentPeriodEnd), 'day')) {
+        throw new ConflictError(CONFLICT_ERRORS.USER_ALREADY_ACTIVE_IN_PLAN);
+      }
+
+      live.cancelAtPeriodEnd = true;
+      this.appendHistory(
+        live,
+        'cancel_scheduled',
+        'system',
+        `Scheduled to cancel at period end due to future subscription starting on ${start.format('YYYY-MM-DD')}`
+      );
+      await this.em.flush();
+    }
+
+    return this.createSubscriptionFromScratch(user, plan, input);
+  }
+
+  /**
+   * Las suscripciones del miembro **a un plan concreto**: la vigente y la
+   * futura ya programada, como mucho una de cada.
+   *
+   * @remarks Las reglas de solape razonan por plan (ADR 0006, decisión 8): una
+   * suscripción a otro plan nunca bloquea ni se ve afectada.
+   *
+   * @param companySubscriptions - Activas y futuras del miembro en la empresa.
+   * @param plan - Plan por el que se pregunta.
+   * @returns La vigente y la futura a ese plan, si las hay.
+   */
+  private findSubscriptionsToPlan(
+    companySubscriptions: Subscription[],
+    plan: Plan
+  ): { live?: Subscription; scheduled?: Subscription } {
+    const toPlan = companySubscriptions.filter(s => s.plan.id === plan.id);
+
+    return {
+      live: toPlan.find(s => !this.isUnusedFutureSubscription(s)),
+      scheduled: toPlan.find(s => this.isUnusedFutureSubscription(s)),
+    };
+  }
+
+  /**
+   * Mueve la fecha de inicio de una **Suscripción Futura** ya programada al
+   * mismo plan, en vez de crear una segunda.
+   *
+   * @param scheduled - La futura programada a ese plan.
+   * @param plan - El plan, para recalcular el fin de periodo.
+   * @param input - Petición de creación; sin `startDate` se adelanta a hoy.
+   * @returns La misma suscripción, con su periodo nuevo.
+   */
+  private async moveFutureSubscriptionStart(
+    scheduled: Subscription,
+    plan: Plan,
+    input: CreateSubscriptionInput
+  ): Promise<ServiceResponse> {
+    await this.updateFutureSubscriptionDate(scheduled, plan, input.startDate);
+
+    return createServiceResponse(
+      200,
+      'Subscription start date updated successfully',
+      true,
+      { subscription: scheduled }
+    );
   }
 
   /**
@@ -1333,11 +1377,8 @@ export class SubscriptionService extends BaseService {
   // ═══════════════════════════════════════════
 
   /**
-   * Caso 1 y 2: el usuario ya tiene una suscripción activa relevante.
-   * Si es al mismo plan, es un conflicto real. Si es a otro plan de la
-   * misma empresa, se trata como cambio de plan (sin prorrateo, ya que
-   * createSubscription no expone ese parámetro al frontend — para
-   * prorratear explícitamente, el frontend debe llamar a changePlan).
+   * ¿Es esta una **Suscripción Futura** que aún no ha empezado? Su periodo
+   * arranca después de hoy, así que no da acceso todavía.
    */
   private isUnusedFutureSubscription(subscription: Subscription): boolean {
     const now = moment();
@@ -1374,36 +1415,9 @@ export class SubscriptionService extends BaseService {
     await this.em.flush();
   }
 
-  private async resolveExistingActiveSubscription(
-    activeSubscription: Subscription,
-    newPlan: Plan,
-    input: CreateSubscriptionInput
-  ): Promise<ServiceResponse> {
-    if (activeSubscription.plan.id === newPlan.id) {
-      if (this.isUnusedFutureSubscription(activeSubscription)) {
-        await this.updateFutureSubscriptionDate(
-          activeSubscription,
-          newPlan,
-          input.startDate
-        );
-
-        return createServiceResponse(
-          200,
-          'Subscription start date updated successfully',
-          true,
-          { subscription: activeSubscription }
-        );
-      }
-
-      throw new ConflictError(CONFLICT_ERRORS.USER_ALREADY_ACTIVE_IN_PLAN);
-    }
-
-    return this.executePlanChange(activeSubscription, newPlan, false);
-  }
-
   /**
-   * Caso 3: no hay nada que sustituir ni cambiar — se crea la suscripción
-   * desde cero, con o sin trial según el plan.
+   * Crea la suscripción desde cero, con o sin trial según el plan. Nada que
+   * sustituir: lo que el miembro ya sostenga a otros planes sigue su curso.
    */
   private async createSubscriptionFromScratch(
     user: User,
@@ -1694,7 +1708,48 @@ export class SubscriptionService extends BaseService {
       throw new BadRequestError(BAD_REQUEST_ERRORS.NEW_PLAN_SAME_AS_CURRENT);
     }
 
+    await this.assertNotAlreadyLiveInPlan(subscription, newPlan);
+
     return { subscription, newPlan };
+  }
+
+  /**
+   * Decisión 7 del ADR 0006, en la ruta de cambio de plan: el miembro no puede
+   * acabar con dos suscripciones vigentes al mismo plan.
+   *
+   * @remarks Cambiar de plan hacia uno que el miembro ya sostiene dejaría dos
+   * vigentes idénticas, y con ellas la pregunta "¿cuántos créditos me quedan?"
+   * sin respuesta. La ruta para encadenar dos periodos del mismo plan es una
+   * **Suscripción Futura**. La pregunta se le hace al {@link EntitlementService},
+   * único dueño de "qué sostiene el miembro ahora mismo".
+   *
+   * @param subscription - La suscripción que se va a migrar; se excluye de la
+   *   comprobación, que solo mira a las **otras** del Entitlement.
+   * @param newPlan - El plan de destino.
+   * @throws ConflictError `USER_ALREADY_ACTIVE_IN_PLAN` si ya hay una vigente
+   *   a ese plan.
+   */
+  private async assertNotAlreadyLiveInPlan(
+    subscription: Subscription,
+    newPlan: Plan
+  ): Promise<void> {
+    const companyId =
+      this.extractCompanyId(subscription.company) ??
+      this.extractCompanyId(newPlan.company);
+
+    const entitlement = await this.entitlement.findLiveSubscriptions(
+      subscription.user.id,
+      companyId,
+      { populate: ['plan'] }
+    );
+
+    const alreadyLive = entitlement.some(
+      live => live.id !== subscription.id && live.plan.id === newPlan.id
+    );
+
+    if (alreadyLive) {
+      throw new ConflictError(CONFLICT_ERRORS.USER_ALREADY_ACTIVE_IN_PLAN);
+    }
   }
 
   /**

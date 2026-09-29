@@ -80,8 +80,27 @@ type Mutation {
     ): TokenizeCardResponse!
 
     # ── Subscription — usuario ────────────────────────────────────────
+    """
+    Anade una suscripcion al Entitlement del miembro. SIEMPRE anade: una
+    suscripcion vigente a otro plan se queda como esta, asi que comprar un
+    Session Pack ya no cuesta la membresia. Ya no se infiere un cambio de plan
+    a partir de "otro plan, inicio hoy" — para cambiar de plan usar changePlan.
+
+    Se rechaza con USER_ALREADY_ACTIVE_IN_PLAN si el miembro ya sostiene una
+    vigente a ese mismo plan; encadenar dos periodos del mismo plan se pide con
+    una fecha de inicio posterior al fin de la vigente (Suscripcion Futura).
+    Ver ADR 0006.
+    """
     createSubscription(subscription: CreateSubscriptionInput!): SubscriptionResponse!
-    """Cambio de plan con prorrateo opcional. Usar en lugar de updateSubscription para cambios de plan."""
+    """
+    Cambio de plan con prorrateo opcional, explicito y nombrando la suscripcion
+    a migrar. Usar en lugar de updateSubscription para cambios de plan — y en
+    lugar de createSubscription, que ya no lo infiere.
+
+    Se rechaza con USER_ALREADY_ACTIVE_IN_PLAN si el miembro ya sostiene una
+    vigente al plan de destino, y sigue sin permitirse un cambio hacia o desde
+    un Session Pack. Ver ADR 0006.
+    """
     changePlan(input: ChangePlanInput!): SubscriptionResponse!
     updateSubscription(subscription: UpdateSubscriptionInput!): SubscriptionResponse!
     """
