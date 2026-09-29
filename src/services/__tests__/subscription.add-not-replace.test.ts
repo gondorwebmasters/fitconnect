@@ -33,44 +33,56 @@ describe('SubscriptionService — buying a Plan adds a Subscription', () => {
   /** Suscripción que resuelve el findOne(Subscription, { id }) de changePlan. */
   let subscriptionById: any;
 
-  const PREMIUM: any = {
-    id: 'plan-premium',
-    amount: 5000,
-    interval: PlanInterval.MONTH,
-    intervalCount: 1,
-    currency: 'eur',
-    name: 'Premium',
-    trialPeriodDays: 0,
-    isActive: true,
-    sessionCount: null,
-    company: { id: 'comp-1' },
-  };
+  /**
+   * Los planes se reconstruyen en cada test: algunos necesitan cambiar
+   * `amount` (encadenar periodos exige un plan gratuito, porque los de pago
+   * deben empezar hoy) y un objeto compartido se llevaría ese cambio al
+   * siguiente test.
+   */
+  function buildPlans() {
+    return {
+      PREMIUM: {
+        id: 'plan-premium',
+        amount: 5000,
+        interval: PlanInterval.MONTH,
+        intervalCount: 1,
+        currency: 'eur',
+        name: 'Premium',
+        trialPeriodDays: 0,
+        isActive: true,
+        sessionCount: null,
+        company: { id: 'comp-1' },
+      } as any,
+      PACK: {
+        id: 'plan-pack',
+        amount: 9000,
+        interval: PlanInterval.MONTH,
+        intervalCount: 3,
+        currency: 'eur',
+        name: 'Entrenamientos personalizados',
+        trialPeriodDays: 0,
+        isActive: true,
+        sessionCount: 10,
+        company: { id: 'comp-1' },
+      } as any,
+      BASIC: {
+        id: 'plan-basic',
+        amount: 3000,
+        interval: PlanInterval.MONTH,
+        intervalCount: 1,
+        currency: 'eur',
+        name: 'Basic',
+        trialPeriodDays: 0,
+        isActive: true,
+        sessionCount: null,
+        company: { id: 'comp-1' },
+      } as any,
+    };
+  }
 
-  const PACK: any = {
-    id: 'plan-pack',
-    amount: 9000,
-    interval: PlanInterval.MONTH,
-    intervalCount: 3,
-    currency: 'eur',
-    name: 'Entrenamientos personalizados',
-    trialPeriodDays: 0,
-    isActive: true,
-    sessionCount: 10,
-    company: { id: 'comp-1' },
-  };
-
-  const BASIC: any = {
-    id: 'plan-basic',
-    amount: 3000,
-    interval: PlanInterval.MONTH,
-    intervalCount: 1,
-    currency: 'eur',
-    name: 'Basic',
-    trialPeriodDays: 0,
-    isActive: true,
-    sessionCount: null,
-    company: { id: 'comp-1' },
-  };
+  let PREMIUM: any;
+  let PACK: any;
+  let BASIC: any;
 
   /** Una suscripción vigente hoy al plan dado. */
   function liveSub(overrides: Record<string, any> = {}): any {
@@ -118,6 +130,7 @@ describe('SubscriptionService — buying a Plan adds a Subscription', () => {
     user = new User({} as any);
     user.id = 'user-1';
     companySubs = [];
+    ({ PREMIUM, PACK, BASIC } = buildPlans());
     planById = {
       [PREMIUM.id]: PREMIUM,
       [PACK.id]: PACK,
@@ -300,7 +313,6 @@ describe('SubscriptionService — buying a Plan adds a Subscription', () => {
         buildInput({ startDate: start.toDate() })
       );
 
-      PACK.amount = 9000;
       expect(response.code).toBe(201);
       const created = (response as any).subscription;
       expect(moment(created.currentPeriodStart).isSame(start, 'day')).toBe(
@@ -325,7 +337,6 @@ describe('SubscriptionService — buying a Plan adds a Subscription', () => {
       await expect(attempt).rejects.toThrow(
         CONFLICT_ERRORS.USER_ALREADY_ACTIVE_IN_PLAN
       );
-      PACK.amount = 9000;
     });
   });
   describe('the whole feature, end to end', () => {
@@ -355,8 +366,6 @@ describe('SubscriptionService — buying a Plan adds a Subscription', () => {
       pack.id = 'sub-pack';
       companySubs = [premium, pack];
 
-      PREMIUM.amount = 5000;
-      PACK.amount = 9000;
       return { premium, pack };
     }
 

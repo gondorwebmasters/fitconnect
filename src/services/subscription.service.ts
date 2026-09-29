@@ -180,6 +180,16 @@ export class SubscriptionService extends BaseService {
    *
    *  3. Inicio en el futuro → **Suscripción Futura**, que es también la ruta
    *     para encadenar dos periodos del mismo plan.
+   *
+   * @param input - Petición de compra: miembro, plan, empresa y, opcionalmente,
+   *   fecha de inicio, método de pago y días de prueba.
+   * @returns La suscripción añadida (201), o la **Suscripción Futura** que ya
+   *   había a ese plan con su fecha nueva (200).
+   * @throws ConflictError `USER_ALREADY_ACTIVE_IN_PLAN` si el miembro ya
+   *   sostiene una vigente a ese plan, y `FUTURE_SUBSCRIPTION_ALREADY_SCHEDULED`
+   *   si ya tiene una futura programada.
+   * @throws BadRequestError si la fecha de inicio no le corresponde al plan
+   *   (ver `validateStartDateForPlan`).
    */
   public async createSubscription(
     input: CreateSubscriptionInput
@@ -266,11 +276,14 @@ export class SubscriptionService extends BaseService {
       plan
     );
 
-    if (scheduled) {
-      if (live && start.isBefore(moment(live.currentPeriodEnd), 'day')) {
-        throw new ConflictError(CONFLICT_ERRORS.USER_ALREADY_ACTIVE_IN_PLAN);
-      }
+    // Solaparse con la vigente del mismo plan dejaría dos vigentes idénticas,
+    // que es lo que prohíbe la decisión 7 — se pida programando una futura
+    // nueva o moviendo la que ya hay.
+    if (live && start.isBefore(moment(live.currentPeriodEnd), 'day')) {
+      throw new ConflictError(CONFLICT_ERRORS.USER_ALREADY_ACTIVE_IN_PLAN);
+    }
 
+    if (scheduled) {
       return this.moveFutureSubscriptionStart(scheduled, plan, input);
     }
 
@@ -283,10 +296,6 @@ export class SubscriptionService extends BaseService {
     }
 
     if (live) {
-      if (start.isBefore(moment(live.currentPeriodEnd), 'day')) {
-        throw new ConflictError(CONFLICT_ERRORS.USER_ALREADY_ACTIVE_IN_PLAN);
-      }
-
       live.cancelAtPeriodEnd = true;
       this.appendHistory(
         live,
@@ -1379,6 +1388,9 @@ export class SubscriptionService extends BaseService {
   /**
    * ¿Es esta una **Suscripción Futura** que aún no ha empezado? Su periodo
    * arranca después de hoy, así que no da acceso todavía.
+   *
+   * @param subscription - Suscripción a clasificar.
+   * @returns `true` si su periodo empieza después de hoy.
    */
   private isUnusedFutureSubscription(subscription: Subscription): boolean {
     const now = moment();
