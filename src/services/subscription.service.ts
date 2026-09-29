@@ -1132,6 +1132,7 @@ export class SubscriptionService extends BaseService {
    * {@link EntitlementService}, el único dueño de la pregunta (ADR 0006), para
    * que esta query y el payload de auth no puedan divergir.
    *
+   * `subscriptions` va ordenado por fecha de inicio, como antes de delegar.
    * `subscription` resuelve con la misma regla determinista que los escalares
    * del payload (`selectReportedSubscription`, issue #20) y no con "el primero
    * por fecha de inicio": comprar un Session Pack no puede cambiar lo que
@@ -1150,6 +1151,13 @@ export class SubscriptionService extends BaseService {
       userId,
       undefined,
       { populate: ['plan', 'defaultPaymentMethod'] }
+    );
+    // Orden estable por fecha de inicio, el mismo que la query pedía a la base
+    // de datos antes de delegar: los fronts pintan la lista tal cual.
+    entitlement.sort(
+      (a, b) =>
+        (a.currentPeriodStart?.getTime() ?? 0) -
+        (b.currentPeriodStart?.getTime() ?? 0)
     );
 
     return createServiceResponse(

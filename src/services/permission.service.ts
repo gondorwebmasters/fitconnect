@@ -26,6 +26,7 @@ import { BaseService } from './base.service';
 import {
   aggregateSubscriptionState,
   EntitlementService,
+  periodEndOf,
   selectReportedSubscription,
 } from './entitlement.service';
 
@@ -286,7 +287,7 @@ export class PermissionService extends BaseService {
       planId: plan?.id ?? null,
       planName: plan?.name ?? null,
       status: subscription.status,
-      endDate: subscription.currentPeriodEnd ?? subscription.trialEnd ?? null,
+      endDate: periodEndOf(subscription),
       cancelAtPeriodEnd: subscription.cancelAtPeriodEnd ?? null,
       remainingCredits: subscription.remainingCredits,
       creditsTotal: subscription.creditsTotal ?? null,
@@ -728,16 +729,26 @@ export class PermissionService extends BaseService {
         isActive: true,
       });
 
+      const coachPlan = {
+        id: 'coach-free-plan',
+        name: 'Plan de Entrenador',
+        amount: 0,
+        currency: Currency.EUR,
+        interval: 'lifetime',
+      };
+      const coachSubscriptionId = 'coach-free-sub';
+
       return {
         hasActiveSubscription: true,
         // El coach no sostiene ninguna suscripción real: su entrada es
         // sintética, igual que su plan, para que `subscriptions[]` y los
-        // escalares no se contradigan.
+        // escalares no se contradigan. Sale del mismo `coachPlan` que ellos
+        // para que no puedan divergir.
         subscriptions: [
           {
-            id: 'coach-free-sub',
-            planId: 'coach-free-plan',
-            planName: 'Plan de Entrenador',
+            id: coachSubscriptionId,
+            planId: coachPlan.id,
+            planName: coachPlan.name,
             status: SubscriptionStatus.ACTIVE,
             endDate: null,
             cancelAtPeriodEnd: null,
@@ -746,17 +757,11 @@ export class PermissionService extends BaseService {
           },
         ],
         subscriptionState: SubscriptionAccessState.ACTIVE,
-        plan: {
-          id: 'coach-free-plan',
-          name: 'Plan de Entrenador',
-          amount: 0,
-          currency: Currency.EUR,
-          interval: 'lifetime',
-        } as any,
+        plan: coachPlan as any,
         permissions,
         permissionNames: this.coachPermissionNames,
         subscriptionStatus: SubscriptionStatus.ACTIVE,
-        subscriptionId: 'coach-free-sub',
+        subscriptionId: coachSubscriptionId,
         trialEndsAt: null,
         renewsAt: null,
         isInTrial: false,
@@ -833,13 +838,6 @@ export class PermissionService extends BaseService {
       user.id,
       companyId
     );
-    // `subscriptions[]` es la verdad del payload. Los escalares siguen ahí,
-    // deprecados, y resuelven con la regla determinista y estable de
-    // `selectReportedSubscription` (issue #20, ADR 0006): comprar un Session
-    // Pack no puede cambiar lo que muestra una app antigua.
-    // Non-null: el Entitlement no está vacío, se acaba de comprobar arriba.
-    const subscription = selectReportedSubscription(entitlement)!;
-
     // `hasActive` y `subscriptionState` se leen sobre el **conjunto**, no sobre
     // "la" suscripción (ADR 0006, decisiones 4 y 10): acceso general mientras el
     // Entitlement no esté vacío, y `ACTIVE` por encima de cualquier estado que
@@ -871,6 +869,12 @@ export class PermissionService extends BaseService {
       };
     }
 
+    // `subscriptions[]` es la verdad del payload. Los escalares siguen ahí,
+    // deprecados, y resuelven con la regla determinista y estable de
+    // `selectReportedSubscription` (issue #20, ADR 0006): comprar un Session
+    // Pack no puede cambiar lo que muestra una app antigua.
+    // Non-null: el Entitlement no está vacío, se acaba de comprobar arriba.
+    const subscription = selectReportedSubscription(entitlement)!;
     const plan = subscription.plan;
     const permissions = await this.unitePlanPermissions(entitlement);
 
@@ -934,10 +938,14 @@ export class PermissionService extends BaseService {
 
     for (const companySubscriptions of byCompany.values()) {
       const permissions = await this.unitePlanPermissions(companySubscriptions);
-      // Los campos singulares (plan, estado, renovación) son una vista
-      // degradada del conjunto y resuelven con la misma regla determinista que
-      // los escalares del payload (issue #20).
-      const subscription = selectReportedSubscription(companySubscriptions)!;
+      // Los campos singulares (plan, estado, renovación) siguen siendo los de
+      // una suscripción cualquiera del conjunto, como hoy. **No** se les aplica
+      // la regla determinista del issue #20: `getUserActiveSubscriptions`
+      // filtra solo por estado, así que su conjunto incluye Suscripciones
+      // Futuras, y la regla elegiría precisamente una de ellas (ilimitada y con
+      // el periodo más lejano). Arreglarlo pide que este listado salga del
+      // Entitlement, que es trabajo aparte.
+      const subscription = companySubscriptions[0];
       const plan = subscription.plan;
 
       companiesContext.push({

@@ -15,6 +15,7 @@ import {
   TokenPair,
 } from '../types/common.type';
 import { UserProviderType } from '../types/enums';
+import { LoginPermissionsContext } from '../types/permissions';
 import {
   BadRequestError,
   createServiceResponse,
@@ -759,26 +760,11 @@ export class AuthService extends BaseService {
     user.activeCompanyId = company.id;
     await this.em.flush();
 
+    const subscriptionPayload = this.toSubscriptionPayload(permissionsContext);
+
     // Agregar permisos y subscription al objeto user para retrocompatibilidad
     Object.assign(user, {
-      subscription: {
-        hasActive: permissionsContext.hasActiveSubscription,
-        subscriptionState: permissionsContext.subscriptionState,
-        // La verdad del payload: una entrada por suscripción vigente, con sus
-        // propios créditos. Los campos de debajo son la vista singular
-        // deprecada del mismo conjunto (issue #20, ADR 0006).
-        subscriptions: permissionsContext.subscriptions,
-        planName: permissionsContext.plan?.name || null,
-        status: permissionsContext.subscriptionStatus,
-        isInTrial: permissionsContext.isInTrial || false,
-        trialEndsAt: permissionsContext.trialEndsAt || null,
-        startDate: permissionsContext.startDate || null,
-        endDate: permissionsContext.endDate || null,
-        cancelAtPeriodEnd: permissionsContext.cancelAtPeriodEnd ?? null,
-        renewsAt: permissionsContext.renewsAt ?? null,
-        remainingCredits: permissionsContext.remainingCredits ?? null,
-        creditsTotal: permissionsContext.creditsTotal ?? null,
-      },
+      subscription: subscriptionPayload,
       permissions: permissionsContext.permissionNames,
     });
 
@@ -786,26 +772,40 @@ export class AuthService extends BaseService {
       user,
       company,
       tokens,
-      subscription: {
-        hasActive: permissionsContext.hasActiveSubscription,
-        subscriptionState: permissionsContext.subscriptionState,
-        // La verdad del payload: una entrada por suscripción vigente, con sus
-        // propios créditos. Los campos de debajo son la vista singular
-        // deprecada del mismo conjunto (issue #20, ADR 0006).
-        subscriptions: permissionsContext.subscriptions,
-        planName: permissionsContext.plan?.name || null,
-        status: permissionsContext.subscriptionStatus,
-        isInTrial: permissionsContext.isInTrial || false,
-        trialEndsAt: permissionsContext.trialEndsAt || null,
-        startDate: permissionsContext.startDate || null,
-        endDate: permissionsContext.endDate || null,
-        cancelAtPeriodEnd: permissionsContext.cancelAtPeriodEnd ?? null,
-        renewsAt: permissionsContext.renewsAt ?? null,
-        remainingCredits: permissionsContext.remainingCredits ?? null,
-        creditsTotal: permissionsContext.creditsTotal ?? null,
-      },
+      subscription: subscriptionPayload,
       permissions: permissionsContext.permissionNames,
     });
+  }
+
+  /**
+   * El bloque `subscription` del payload de auth, que sale idéntico en el
+   * `user` (retrocompatibilidad) y en la raíz de la respuesta.
+   *
+   * @remarks `subscriptions` es la verdad: una entrada por suscripción vigente,
+   * con sus propios créditos. El resto son la vista singular **deprecada** del
+   * mismo conjunto, que resuelve de forma determinista y estable (issue #20,
+   * ADR 0006). `hasActive` y `subscriptionState` no están deprecados: son
+   * agregados sobre todo el conjunto, no una elección dentro de él.
+   *
+   * @param permissionsContext - Contexto de permisos del miembro en la empresa.
+   * @returns El bloque `subscription` del payload.
+   */
+  private toSubscriptionPayload(permissionsContext: LoginPermissionsContext) {
+    return {
+      hasActive: permissionsContext.hasActiveSubscription,
+      subscriptionState: permissionsContext.subscriptionState,
+      subscriptions: permissionsContext.subscriptions,
+      planName: permissionsContext.plan?.name || null,
+      status: permissionsContext.subscriptionStatus,
+      isInTrial: permissionsContext.isInTrial || false,
+      trialEndsAt: permissionsContext.trialEndsAt || null,
+      startDate: permissionsContext.startDate || null,
+      endDate: permissionsContext.endDate || null,
+      cancelAtPeriodEnd: permissionsContext.cancelAtPeriodEnd ?? null,
+      renewsAt: permissionsContext.renewsAt ?? null,
+      remainingCredits: permissionsContext.remainingCredits ?? null,
+      creditsTotal: permissionsContext.creditsTotal ?? null,
+    };
   }
 
   public async resetRandomPassword(token: string): Promise<string> {

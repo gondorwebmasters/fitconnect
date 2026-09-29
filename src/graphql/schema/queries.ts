@@ -89,6 +89,11 @@ type Query {
     del conjunto para apps antiguas y resuelve con la misma regla determinista
     que los escalares del auth payload — gana la vigente ilimitada y, en empate
     o si ninguna lo es, la de periodo mas lejano. Ver ADR 0006.
+
+    Sin directiva @deprecated: SubscriptionResponse.subscription es el tipo de
+    respuesta compartido por getSubscription y por catorce mutaciones, donde el
+    campo singular es la respuesta correcta y no esta deprecado. La deprecacion
+    es de *esta* query, no del campo.
     """
     getActiveSubscription(userId: ID!): SubscriptionResponse!
     getSubscriptionsStats: SubscriptionsStatsResponse!
