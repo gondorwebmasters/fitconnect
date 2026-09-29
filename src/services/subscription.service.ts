@@ -185,9 +185,9 @@ export class SubscriptionService extends BaseService {
    *   fecha de inicio, método de pago y días de prueba.
    * @returns La suscripción añadida (201), o la **Suscripción Futura** que ya
    *   había a ese plan con su fecha nueva (200).
-   * @throws ConflictError `USER_ALREADY_ACTIVE_IN_PLAN` si el miembro ya
-   *   sostiene una vigente a ese plan, y `FUTURE_SUBSCRIPTION_ALREADY_SCHEDULED`
-   *   si ya tiene una futura programada.
+   * @throws ConflictError si el miembro ya sostiene una vigente a ese plan
+   *   (`USER_ALREADY_ACTIVE_IN_PLAN`) o ya tiene una **Suscripción Futura**
+   *   programada.
    * @throws BadRequestError si la fecha de inicio no le corresponde al plan
    *   (ver `validateStartDateForPlan`).
    */
@@ -287,8 +287,10 @@ export class SubscriptionService extends BaseService {
       return this.moveFutureSubscriptionStart(scheduled, plan, input);
     }
 
-    // Como máximo una Suscripción Futura por miembro. La regla sigue siendo
-    // por miembro y no por plan; escalarla al Entitlement es el issue #23.
+    // Como máximo una Suscripción Futura por miembro. Solo gobierna a quien
+    // pide una futura: comprar para hoy nunca se bloquea por una futura ya
+    // programada. La regla sigue siendo por miembro y no por plan; escalarla
+    // al Entitlement es el issue #23.
     if (companySubscriptions.some(s => this.isUnusedFutureSubscription(s))) {
       throw new ConflictError(
         CONFLICT_ERRORS.FUTURE_SUBSCRIPTION_ALREADY_SCHEDULED
@@ -1633,11 +1635,9 @@ export class SubscriptionService extends BaseService {
    * Núcleo del cambio de plan, sin resolución de IDs: recibe la
    * Subscription y el Plan ya cargados.
    *
-   * Reutilizado por:
-   *  - changePlan() — cuando el frontend pide explícitamente un cambio
-   *  - createSubscription() — cuando detecta que el usuario ya tiene esta
-   *    suscripción activa a otro plan de la misma empresa y, en vez de
-   *    crear una segunda entidad, debe migrar la existente con prorrateo.
+   * Solo lo usa `changePlan`: el cambio de plan es siempre explícito, pedido
+   * por el frontend y nombrando la suscripción a migrar. `createSubscription`
+   * ya no llega aquí — desde el ADR 0006 (decisión 9) siempre añade.
    *
    * Dividido en pasos privados con nombre propio para mantener la
    * complejidad cognitiva baja.

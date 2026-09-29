@@ -207,6 +207,21 @@ describe('ScheduleService — the subscription that opens the door pays', () => 
       expect(held.creditsUsed).toBe(0);
     });
 
+    it('spends no credit on a schedule restricted to the time-based plan, though the member holds a pack too', async () => {
+      // La otra mitad del caso del ADR 0006: el miembro sostiene *Premium* y
+      // un bono, y entra a los horarios de Premium sin gastar créditos del
+      // bono — solo los de los horarios del bono.
+      const held = pack();
+      entitlement = [unlimited(), held];
+      mockScheduleRepo.findOne.mockResolvedValue(restrictedTo([PREMIUM]));
+
+      const res = await service.addUserToSchedule(member as any, 'sch-1');
+
+      expect(res.success).toBe(true);
+      expect(mockEm.execute).not.toHaveBeenCalled();
+      expect(held.creditsUsed).toBe(0);
+    });
+
     it('charges the pack on an unrestricted schedule when it is all the member holds', async () => {
       entitlement = [pack()];
       mockScheduleRepo.findOne.mockResolvedValue(buildSchedule());

@@ -61,8 +61,6 @@ export const BAD_REQUEST_ERRORS = {
   REQUIRED_FIELDS: 'userId, planId and companyId are required',
   TRIAL_PERIOD_NEGATIVE: 'Trial period days cannot be negative',
   INVALID_START_DATE: 'Invalid startDate',
-  CANNOT_SCHEDULE_PLAN_CHANGE_IN_FUTURE:
-    'Cannot schedule a plan change in the future',
   VALID_PM_REQUIRED_REACTIVATE:
     'A valid payment method is required to reactivate the subscription',
   PAID_PLAN_MUST_START_TODAY:
