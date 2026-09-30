@@ -320,7 +320,15 @@ export class PermissionService extends BaseService {
    * reportan una vez. Con una sola suscripción el resultado es exactamente el
    * de antes de la unión.
    *
-   * @param subscriptions - El Entitlement, con los planes ya populados.
+   * No se llama a `planPermissions.init()`: en MikroORM 6 recarga siempre
+   * (`refresh: true`) con los filtros por defecto, y en el login — operación
+   * pública, sin parámetros de `companyContext` — el auto-join a `Plan` revienta
+   * con "No arguments provided for filter". Los llamantes ya populan
+   * `plan.planPermissions.permission`; si alguno no lo hace, `getItems()` falla
+   * en alto.
+   *
+   * @param subscriptions - El Entitlement, con `plan.planPermissions.permission`
+   * ya populado.
    * @returns Los permisos concedidos por algún plan del conjunto.
    */
   private async unitePlanPermissions(
@@ -330,7 +338,6 @@ export class PermissionService extends BaseService {
 
     for (const subscription of subscriptions) {
       const plan = subscription.plan;
-      await plan.planPermissions.init();
 
       for (const permission of this.activePermissionsOfPlan(plan)) {
         if (!byName.has(permission.name))
