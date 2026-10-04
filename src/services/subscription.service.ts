@@ -31,6 +31,7 @@ import { CustomerService } from './customer.service';
 import { EmailService } from './email.service';
 import {
   EntitlementService,
+  isFutureSubscription,
   selectReportedSubscription,
 } from './entitlement.service';
 import { InvoiceService } from './invoice.service';
@@ -332,8 +333,8 @@ export class SubscriptionService extends BaseService {
     const toPlan = companySubscriptions.filter(s => s.plan.id === plan.id);
 
     return {
-      live: toPlan.find(s => !this.isUnusedFutureSubscription(s)),
-      scheduled: toPlan.find(s => this.isUnusedFutureSubscription(s)),
+      live: toPlan.find(s => !isFutureSubscription(s)),
+      scheduled: toPlan.find(s => isFutureSubscription(s)),
     };
   }
 
@@ -538,7 +539,7 @@ export class SubscriptionService extends BaseService {
       throw new BadRequestError(BAD_REQUEST_ERRORS.SUBSCRIPTION_ALREADY_CLOSED);
     }
     // Una futura que aún no ha empezado no se corta: se anula.
-    const annulsFuture = this.isUnusedFutureSubscription(subscription);
+    const annulsFuture = isFutureSubscription(subscription);
     this.applyCanceledTransition(subscription, now);
     // Trunca el período pagado: el invariante CANCELED ⇒ período terminado se
     // mantiene por construcción, y el miembro pierde los días restantes.
@@ -611,7 +612,7 @@ export class SubscriptionService extends BaseService {
       plan: subscription.plan,
       status: { $in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING] },
     });
-    if (samePlan.some(s => this.isUnusedFutureSubscription(s))) {
+    if (samePlan.some(s => isFutureSubscription(s))) {
       throw new ConflictError(CONFLICT_ERRORS.FUTURE_SUBSCRIPTION_BLOCKS_UNDO);
     }
 
@@ -1322,6 +1323,47 @@ export class SubscriptionService extends BaseService {
   }
 
   /**
+   * Las **Suscripciones Futuras** del miembro, aparte de su Entitlement: lo que
+   * tiene programado y aún no le da acceso.
+   *
+   * @remarks Existe para que el administrador vea si una asignación movió la
+   * futura que ya había al mismo plan — sin ella no tiene forma de saberlo — y
+   * para que el miembro vea lo que le espera. Un miembro solo consulta las
+   * suyas; las de otro exigen ser administrador.
+   *
+   * @param userId - Miembro cuyas futuras se consultan.
+   * @param requester - Quién pregunta y si actúa como administrador.
+   * @returns Las futuras, de la más próxima a la más lejana.
+   */
+  public async getFutureSubscriptions(
+    userId: string,
+    requester: SubscriptionRequester
+  ): Promise<ServiceResponse> {
+    if (!userId) throw new BadRequestError(BAD_REQUEST_ERRORS.USER_ID_REQUIRED);
+    if (!requester.isAdmin && requester.id !== userId) {
+      throw new ForbiddenError(
+        'You can only see your own future subscriptions'
+      );
+    }
+
+    const user = await this.em.findOne(User, { id: userId });
+    if (!user) throw new NotFoundError('User');
+
+    const futures = await this.entitlement.findFutureSubscriptions(
+      userId,
+      undefined,
+      { populate: ['plan'] }
+    );
+
+    return createServiceResponse(
+      200,
+      'Future subscriptions fetched successfully',
+      true,
+      { subscriptions: futures }
+    );
+  }
+
+  /**
    * Devuelve el audit log de cambios de estado de una suscripción.
    */
   public async getSubscriptionHistory(
@@ -1481,19 +1523,6 @@ export class SubscriptionService extends BaseService {
   // ═══════════════════════════════════════════
   // OPERACIONES DE ADMIN
   // ═══════════════════════════════════════════
-
-  /**
-   * ¿Es esta una **Suscripción Futura** que aún no ha empezado? Su periodo
-   * arranca después de hoy, así que no da acceso todavía.
-   *
-   * @param subscription - Suscripción a clasificar.
-   * @returns `true` si su periodo empieza después de hoy.
-   */
-  private isUnusedFutureSubscription(subscription: Subscription): boolean {
-    const now = moment();
-    const currentStart = moment(subscription.currentPeriodStart);
-    return now.isBefore(currentStart, 'day');
-  }
 
   private async updateFutureSubscriptionDate(
     subscription: Subscription,

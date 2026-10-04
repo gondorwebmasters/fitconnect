@@ -63,6 +63,30 @@ export const getActiveSubscription = async (
   }
 };
 
+export const getFutureSubscriptions = async (
+  _: any,
+  args: { userId: string },
+  context: ContextProps
+) => {
+  try {
+    if (!context.currentUser) throw new UnauthorizedError();
+
+    const service = new SubscriptionService(
+      context.em,
+      context.paymentProcessor
+    );
+    return await service.getFutureSubscriptions(args.userId, {
+      id: context.currentUser.id,
+      isAdmin: hasPermissions(
+        context.currentUser,
+        plansPermissions.CREATE_UPDATE_DELETE
+      ),
+    });
+  } catch (error: any) {
+    return handleError(error);
+  }
+};
+
 export const getSubscriptionsStats = async (
   _: any,
   __: any,
@@ -420,6 +444,7 @@ export const subscriptionResolvers = {
       listUserSubscriptions
     ),
     getActiveSubscription,
+    getFutureSubscriptions,
     getSubscriptionsStats: withPermissions(
       plansPermissions.CREATE_UPDATE_DELETE,
       getSubscriptionsStats

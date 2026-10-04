@@ -96,6 +96,13 @@ type Query {
     es de *esta* query, no del campo.
     """
     getActiveSubscription(userId: ID!): SubscriptionResponse!
+    """
+    Las Suscripciones Futuras del miembro, aparte del Entitlement: programadas y
+    sin dar acceso todavia, de la mas proxima a la mas lejana, en
+    \`subscriptions\`. Un miembro solo consulta las suyas; las de otro exigen ser
+    administrador.
+    """
+    getFutureSubscriptions(userId: ID!): SubscriptionResponse!
     getSubscriptionsStats: SubscriptionsStatsResponse!
     getSubscriptionHistory(subscriptionId: ID!): SubscriptionHistoryResponse!
 

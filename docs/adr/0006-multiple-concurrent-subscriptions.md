@@ -91,8 +91,11 @@ banner, el cambio de plan y quién paga cada reserva.
   la copia cliente de la inferencia, que incluye la suposición literal
   `if (activeSubs.length > 1) { no se pueden crear más }`. Una app antigua que
   intente cambiar de plan contra el back nuevo acabaría **pagando dos
-  suscripciones**: el despliegue va app primero, con el flujo de compra de bono
-  tras un flag, y el flag se activa una vez el back está arriba.
+  suscripciones**, y una app nueva contra el back viejo sustituiría la
+  membresía al añadir un bono: app y back se despliegan **a la vez**, sin flag
+  que cubra la ventana entre ambos. Se planteó un flag en la app que se
+  encendiera tras desplegar el back y se descartó: con un solo cliente en
+  producción, coordinar el despliegue es más barato que mantener el flag.
 - N suscripciones significan **N cobros** y dunning independiente. No se
   agrupan; agrupar es un proyecto de facturación aparte. En la práctica un
   Session Pack es pago único y nunca autorenueva.

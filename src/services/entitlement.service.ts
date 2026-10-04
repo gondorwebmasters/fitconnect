@@ -126,6 +126,46 @@ export class EntitlementService extends BaseService {
   }
 
   /**
+   * Las **Suscripciones Futuras** del miembro en la empresa: programadas, sin
+   * dar acceso todavía, y por eso **fuera** del Entitlement.
+   *
+   * @remarks Mismo predicado que {@link isFutureSubscription}, la regla con la
+   * que `createSubscription` decide qué futura mover: lo que se enseña como
+   * futura y lo que se mueve no pueden divergir. Ordenadas por fecha de inicio.
+   *
+   * @param userId - Miembro cuyas futuras se consultan.
+   * @param companyId - Empresa en la que se consulta, si hay alguna en scope.
+   * @param options - `EntityManager` y `populate` del llamante.
+   * @returns Las futuras, de la más próxima a la más lejana.
+   */
+  public async findFutureSubscriptions(
+    userId: string,
+    companyId?: string,
+    options: FindLiveSubscriptionOptions = {}
+  ): Promise<Subscription[]> {
+    const { em = this.em } = options;
+
+    const futures = await em.find(
+      Subscription,
+      {
+        user: userId,
+        ...(companyId ? { company: companyId } : {}),
+        status: {
+          $in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING],
+        },
+        currentPeriodStart: { $gte: futureStartFloor() },
+      },
+      this.tenancyAwareFindOptions(companyId, options)
+    );
+
+    // El `where` exige `currentPeriodStart`: ninguna llega sin él.
+    return futures.sort(
+      (a, b) =>
+        a.currentPeriodStart!.getTime() - b.currentPeriodStart!.getTime()
+    );
+  }
+
+  /**
    * Las opciones de la consulta: el `populate` del llamante más la decisión de
    * tenencia.
    *
@@ -276,6 +316,32 @@ export function aggregateSubscriptionState(
   whenEmpty: SubscriptionAccessState
 ): SubscriptionAccessState {
   return entitlement.length > 0 ? SubscriptionAccessState.ACTIVE : whenEmpty;
+}
+
+/**
+ * El primer instante en que empieza una **Suscripción Futura**: mañana a las
+ * 00:00. La granularidad es el día — empezar más tarde hoy cuenta como empezada.
+ */
+function futureStartFloor(now: Date = moment().toDate()): Date {
+  return moment(now).startOf('day').add(1, 'day').toDate();
+}
+
+/**
+ * ¿Es una **Suscripción Futura**, cuyo periodo arranca después de hoy y que por
+ * eso aún no da acceso? Solo mira la fecha: el estado lo filtra quien consulta.
+ *
+ * @param subscription - Suscripción a clasificar.
+ * @param now - Instante de referencia; por defecto, ahora.
+ * @returns `true` si su periodo empieza a partir de mañana.
+ */
+export function isFutureSubscription(
+  subscription: Subscription,
+  now: Date = moment().toDate()
+): boolean {
+  return (
+    !!subscription.currentPeriodStart &&
+    subscription.currentPeriodStart >= futureStartFloor(now)
+  );
 }
 
 /**
