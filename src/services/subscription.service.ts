@@ -67,6 +67,12 @@ interface CancelSubscriptionInput {
   cancellationReason?: string;
 }
 
+/** Quién pide la operación y si actúa como administrador. */
+export interface SubscriptionRequester {
+  id: string;
+  isAdmin: boolean;
+}
+
 interface RadicalCancelSubscriptionInput {
   subscriptionId: string;
   reason: string;
@@ -439,7 +445,8 @@ export class SubscriptionService extends BaseService {
    */
   public async cancelSubscription(
     input: CancelSubscriptionInput,
-    requesterCompanyId?: string
+    requesterCompanyId?: string,
+    requester?: SubscriptionRequester
   ): Promise<ServiceResponse> {
     if (!input.subscriptionId) {
       throw new BadRequestError(BAD_REQUEST_ERRORS.SUBSCRIPTION_ID_REQUIRED);
@@ -453,6 +460,7 @@ export class SubscriptionService extends BaseService {
 
     if (!subscription) throw new NotFoundError('Subscription');
     this.assertBelongsToCompany(subscription, requesterCompanyId);
+    this.assertMayCancel(subscription, requester);
     if (!subscription.isActive) {
       throw new BadRequestError(BAD_REQUEST_ERRORS.SUBSCRIPTION_NOT_ACTIVE);
     }
@@ -462,7 +470,7 @@ export class SubscriptionService extends BaseService {
     this.appendHistory(
       subscription,
       'cancel_scheduled',
-      'user',
+      requester?.isAdmin ? requester.id : 'user',
       `Cancellation scheduled at period end. Reason: ${input.cancellationReason ?? 'not specified'}`
     );
 
@@ -474,6 +482,15 @@ export class SubscriptionService extends BaseService {
     }
 
     await this.em.flush();
+
+    if (requester) {
+      await this.notifyMemberOfCancellationChange(
+        subscription,
+        requester.id,
+        'Cancelación programada',
+        `Tu suscripción a "${subscription.plan.name}" se ha cancelado y no se renovará. Mantienes el acceso hasta el fin del periodo pagado.`
+      );
+    }
 
     return createServiceResponse(
       200,
@@ -506,14 +523,22 @@ export class SubscriptionService extends BaseService {
       throw new BadRequestError(BAD_REQUEST_ERRORS.REASON_REQUIRED);
     }
 
-    const subscription = await this.em.findOne(Subscription, {
-      id: input.subscriptionId,
-    });
+    const subscription = await this.em.findOne(
+      Subscription,
+      { id: input.subscriptionId },
+      { populate: ['plan', 'user'] }
+    );
 
     if (!subscription) throw new NotFoundError('Subscription');
     this.assertBelongsToCompany(subscription, requesterCompanyId);
 
     const now = new Date();
+    // Sobre una cerrada no se reescribe cuándo terminó.
+    if (this.isClosed(subscription, now)) {
+      throw new BadRequestError(BAD_REQUEST_ERRORS.SUBSCRIPTION_ALREADY_CLOSED);
+    }
+    // Una futura que aún no ha empezado no se corta: se anula.
+    const annulsFuture = this.isUnusedFutureSubscription(subscription);
     this.applyCanceledTransition(subscription, now);
     // Trunca el período pagado: el invariante CANCELED ⇒ período terminado se
     // mantiene por construcción, y el miembro pierde los días restantes.
@@ -534,9 +559,82 @@ export class SubscriptionService extends BaseService {
 
     await this.em.flush();
 
+    await this.notifyMemberOfCancellationChange(
+      subscription,
+      adminId,
+      annulsFuture ? 'Suscripción anulada' : 'Suscripción cancelada',
+      annulsFuture
+        ? `Tu suscripción a "${subscription.plan.name}" que iba a empezar más adelante se ha anulado. Motivo: ${input.reason}`
+        : `Tu suscripción a "${subscription.plan.name}" se ha cancelado con efecto inmediato. Motivo: ${input.reason}`
+    );
+
     return createServiceResponse(
       200,
       'Subscription cancelled immediately',
+      true,
+      {
+        subscription,
+      }
+    );
+  }
+
+  /**
+   * Deshace una cancelación diferida mientras la suscripción sigue viva: vuelve
+   * a renovar. Solo admin (gate de permisos en el resolver). Se rechaza si hay
+   * una Suscripción Futura al mismo plan, porque renovar dejaría dos vigentes
+   * al mismo plan: hay que anular antes la futura.
+   */
+  public async undoCancellation(
+    subscriptionId: string,
+    adminId: string,
+    requesterCompanyId?: string
+  ): Promise<ServiceResponse> {
+    const subscription = await this.em.findOne(
+      Subscription,
+      { id: subscriptionId },
+      { populate: ['plan', 'user'] }
+    );
+
+    if (!subscription) throw new NotFoundError('Subscription');
+    this.assertBelongsToCompany(subscription, requesterCompanyId);
+
+    if (this.isClosed(subscription)) {
+      throw new BadRequestError(BAD_REQUEST_ERRORS.SUBSCRIPTION_ALREADY_CLOSED);
+    }
+    if (!subscription.cancelAtPeriodEnd) {
+      throw new BadRequestError(BAD_REQUEST_ERRORS.CANCELLATION_NOT_SCHEDULED);
+    }
+
+    const samePlan = await this.em.find(Subscription, {
+      id: { $ne: subscription.id },
+      user: subscription.user,
+      plan: subscription.plan,
+      status: { $in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING] },
+    });
+    if (samePlan.some(s => this.isUnusedFutureSubscription(s))) {
+      throw new ConflictError(CONFLICT_ERRORS.FUTURE_SUBSCRIPTION_BLOCKS_UNDO);
+    }
+
+    subscription.cancelAtPeriodEnd = false;
+    this.appendHistory(
+      subscription,
+      'cancel_undone',
+      adminId,
+      '[ADMIN] Scheduled cancellation withdrawn: the subscription renews again'
+    );
+
+    await this.em.flush();
+
+    await this.notifyMemberOfCancellationChange(
+      subscription,
+      adminId,
+      'Cancelación anulada',
+      `Tu suscripción a "${subscription.plan.name}" ya no se cancelará: se renovará con normalidad.`
+    );
+
+    return createServiceResponse(
+      200,
+      'Subscription cancellation undone',
       true,
       {
         subscription,
@@ -2407,6 +2505,21 @@ export class SubscriptionService extends BaseService {
   }
 
   /**
+   * Un miembro solo cancela sus propias suscripciones; la de otro exige ser
+   * administrador. Sin requester es una llamada interna de confianza.
+   */
+  private assertMayCancel(
+    subscription: Subscription,
+    requester?: SubscriptionRequester
+  ): void {
+    if (!requester || requester.isAdmin) return;
+
+    if (subscription.user?.id !== requester.id) {
+      throw new ForbiddenError('You can only cancel your own subscriptions');
+    }
+  }
+
+  /**
    * Verifica que una suscripcion pertenece a la empresa activa del usuario
    * que esta intentando operarla.
    */
@@ -2561,6 +2674,36 @@ export class SubscriptionService extends BaseService {
         `Tu suscripción vence el ${expiryDate}. Contacta con el administrador para renovarla.`
       ),
     ]);
+  }
+
+  /**
+   * Avisa al miembro de que otra persona ha cancelado su suscripción o ha
+   * deshecho la cancelación. Si es él mismo quien actúa, no hay nada que
+   * contarle. Secundaria: un fallo de la notificación no deshace la operación.
+   */
+  private async notifyMemberOfCancellationChange(
+    subscription: Subscription,
+    actorId: string,
+    title: string,
+    body: string
+  ): Promise<void> {
+    const memberId = subscription.user?.id;
+    if (!memberId || memberId === actorId) return;
+
+    try {
+      await this.notificationService.sendToUser(
+        memberId,
+        title,
+        body,
+        { type: 'info', subscriptionId: subscription.id },
+        this.extractCompanyId(subscription.company)
+      );
+    } catch (error) {
+      console.error(
+        'Error sending subscription cancellation notification:',
+        error
+      );
+    }
   }
 
   private async notifyPaymentFailed(subscription: Subscription): Promise<void> {

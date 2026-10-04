@@ -123,6 +123,12 @@ type Mutation {
     nextBillingDate. El miembro pierde los dias restantes. Requiere motivo. Ver ADR 0003.
     """
     radicalCancelSubscription(input: RadicalCancelSubscriptionInput!): SubscriptionResponse!
+    """
+    Deshace una cancelacion diferida mientras la suscripcion sigue viva: vuelve a
+    renovar. Solo admin. Rechazada si hay una suscripcion futura al mismo plan
+    (hay que anularla antes con radicalCancelSubscription).
+    """
+    undoSubscriptionCancellation(subscriptionId: ID!): SubscriptionResponse!
     adminOverrideSubscription(input: AdminOverrideSubscriptionInput!): SubscriptionResponse!
     forceRenewal(subscriptionId: ID!): SubscriptionResponse!
     extendSubscriptionPeriod(subscriptionId: ID!, days: Int!, reason: String!): SubscriptionResponse!

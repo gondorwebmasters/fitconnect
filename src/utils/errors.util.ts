@@ -48,6 +48,9 @@ export const BAD_REQUEST_ERRORS = {
     'adminOverride cannot cancel a subscription. Use radicalCancelSubscription for immediate termination, or cancelSubscription for deferred cancellation.',
   DAYS_MUST_BE_POSITIVE: 'Days must be a positive number',
   REASON_REQUIRED: 'A reason is required',
+  CANCELLATION_NOT_SCHEDULED: 'Subscription has no cancellation scheduled',
+  SUBSCRIPTION_ALREADY_CLOSED:
+    'Subscription is already closed: it was canceled or its period has ended',
   CREDIT_AMOUNT_POSITIVE: 'Credit amount must be a positive number',
   CREDIT_EXCEED_PLAN:
     'Credit cannot exceed the plan amount. Use a refund instead.',
@@ -89,6 +92,8 @@ export const CONFLICT_ERRORS = {
     'User already has an active subscription to this plan',
   BACKDATED_OVERLAPS_EXISTING_ENTITLEMENT:
     'Cannot backdate this subscription: it overlaps an existing active entitlement for this user and company',
+  FUTURE_SUBSCRIPTION_BLOCKS_UNDO:
+    'Cannot undo the cancellation: a future subscription to the same plan is scheduled. Annul it first.',
 } as const;
 
 export const INTERNAL_ERRORS = {

@@ -1,12 +1,12 @@
 import { SubscriptionService } from '../../services/subscription.service';
 import { ContextProps } from '../../types/resolvers';
-import { handleError } from '../../utils/errors.util';
+import { handleError, UnauthorizedError } from '../../utils/errors.util';
 import {
   plansPermissions,
   subcriptionsPermissions,
   usersPermissions,
 } from '../../utils/permissions';
-import { withPermissions } from '../middlewares/permissions';
+import { hasPermissions, withPermissions } from '../middlewares/permissions';
 
 // ═══════════════════════════════════════════
 // QUERIES
@@ -156,13 +156,22 @@ export const cancelSubscription = async (
   context: ContextProps
 ) => {
   try {
+    if (!context.currentUser) throw new UnauthorizedError();
+
     const service = new SubscriptionService(
       context.em,
       context.paymentProcessor
     );
     return await service.cancelSubscription(
       args.input,
-      context.currentUser?.activeCompanyId
+      context.currentUser?.activeCompanyId,
+      {
+        id: context.currentUser.id,
+        isAdmin: hasPermissions(
+          context.currentUser,
+          plansPermissions.CREATE_UPDATE_DELETE
+        ),
+      }
     );
   } catch (error: any) {
     return handleError(error);
@@ -262,6 +271,26 @@ export const radicalCancelSubscription = async (
     );
     return await service.radicalCancelSubscription(
       args.input,
+      context.currentUser.id,
+      context.currentUser?.activeCompanyId
+    );
+  } catch (error: any) {
+    return handleError(error);
+  }
+};
+
+export const undoSubscriptionCancellation = async (
+  _: any,
+  args: { subscriptionId: string },
+  context: ContextProps
+) => {
+  try {
+    const service = new SubscriptionService(
+      context.em,
+      context.paymentProcessor
+    );
+    return await service.undoCancellation(
+      args.subscriptionId,
       context.currentUser.id,
       context.currentUser?.activeCompanyId
     );
@@ -414,6 +443,10 @@ export const subscriptionResolvers = {
     radicalCancelSubscription: withPermissions(
       plansPermissions.CREATE_UPDATE_DELETE,
       radicalCancelSubscription
+    ),
+    undoSubscriptionCancellation: withPermissions(
+      plansPermissions.CREATE_UPDATE_DELETE,
+      undoSubscriptionCancellation
     ),
     adminOverrideSubscription: withPermissions(
       plansPermissions.CREATE_UPDATE_DELETE,
