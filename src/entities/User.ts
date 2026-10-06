@@ -24,6 +24,7 @@ import { PollVote } from './PollVote';
 import { PushToken } from './PushToken';
 import { RefreshToken } from './RefreshToken';
 import { Schedule } from './Schedule';
+import { ScheduleRegistration } from './ScheduleRegistration';
 import { Subscription } from './Subscription';
 import { TrainingTask } from './TraningITask';
 import { Transaction } from './Transaction';
@@ -140,8 +141,14 @@ export class User extends BaseEntity {
   // })
   //plans  = new Collection<Plan>(this);
 
+  /**
+   * Las reservas del miembro. La pivote es una entidad con nombre
+   * ({@link ScheduleRegistration}) porque guarda **qué suscripción pagó** cada
+   * reserva (ADR 0006, decisión 6); la colección se usa igual que siempre.
+   */
   @ManyToMany(() => Schedule, (schedule: Schedule) => schedule.users, {
     owner: true,
+    pivotEntity: () => ScheduleRegistration,
   })
   schedules = new Collection<Schedule>(this);
 

@@ -23,6 +23,7 @@ import { RefreshToken } from './entities/RefreshToken';
 import { Schedule } from './entities/Schedule';
 import { ScheduleOptions } from './entities/ScheduleOptions';
 import { ScheduleProgrammed } from './entities/ScheduleProgrammed';
+import { ScheduleRegistration } from './entities/ScheduleRegistration';
 import { Subscription } from './entities/Subscription';
 import { TrainingTask } from './entities/TraningITask';
 import { Transaction } from './entities/Transaction';
@@ -55,6 +56,7 @@ export default {
     Schedule,
     ScheduleOptions,
     ScheduleProgrammed,
+    ScheduleRegistration,
     Customer,
     Subscription,
     TrainingTask,

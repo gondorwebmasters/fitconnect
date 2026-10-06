@@ -1,12 +1,12 @@
 import { SubscriptionService } from '../../services/subscription.service';
 import { ContextProps } from '../../types/resolvers';
-import { handleError } from '../../utils/errors.util';
+import { handleError, UnauthorizedError } from '../../utils/errors.util';
 import {
   plansPermissions,
   subcriptionsPermissions,
   usersPermissions,
 } from '../../utils/permissions';
-import { withPermissions } from '../middlewares/permissions';
+import { hasPermissions, withPermissions } from '../middlewares/permissions';
 
 // ═══════════════════════════════════════════
 // QUERIES
@@ -58,6 +58,30 @@ export const getActiveSubscription = async (
       context.paymentProcessor
     );
     return await service.getActiveSubscription(args.userId);
+  } catch (error: any) {
+    return handleError(error);
+  }
+};
+
+export const getFutureSubscriptions = async (
+  _: any,
+  args: { userId: string },
+  context: ContextProps
+) => {
+  try {
+    if (!context.currentUser) throw new UnauthorizedError();
+
+    const service = new SubscriptionService(
+      context.em,
+      context.paymentProcessor
+    );
+    return await service.getFutureSubscriptions(args.userId, {
+      id: context.currentUser.id,
+      isAdmin: hasPermissions(
+        context.currentUser,
+        plansPermissions.CREATE_UPDATE_DELETE
+      ),
+    });
   } catch (error: any) {
     return handleError(error);
   }
@@ -156,13 +180,22 @@ export const cancelSubscription = async (
   context: ContextProps
 ) => {
   try {
+    if (!context.currentUser) throw new UnauthorizedError();
+
     const service = new SubscriptionService(
       context.em,
       context.paymentProcessor
     );
     return await service.cancelSubscription(
       args.input,
-      context.currentUser?.activeCompanyId
+      context.currentUser?.activeCompanyId,
+      {
+        id: context.currentUser.id,
+        isAdmin: hasPermissions(
+          context.currentUser,
+          plansPermissions.CREATE_UPDATE_DELETE
+        ),
+      }
     );
   } catch (error: any) {
     return handleError(error);
@@ -270,6 +303,26 @@ export const radicalCancelSubscription = async (
   }
 };
 
+export const undoSubscriptionCancellation = async (
+  _: any,
+  args: { subscriptionId: string },
+  context: ContextProps
+) => {
+  try {
+    const service = new SubscriptionService(
+      context.em,
+      context.paymentProcessor
+    );
+    return await service.undoCancellation(
+      args.subscriptionId,
+      context.currentUser.id,
+      context.currentUser?.activeCompanyId
+    );
+  } catch (error: any) {
+    return handleError(error);
+  }
+};
+
 export const adminOverrideSubscription = async (
   _: any,
   args: { input: any },
@@ -356,6 +409,26 @@ export const applySubscriptionCredit = async (
   }
 };
 
+export const adjustSessionCredits = async (
+  _: any,
+  args: { subscriptionId: string; delta: number; reason: string },
+  context: ContextProps
+) => {
+  try {
+    const service = new SubscriptionService(
+      context.em,
+      context.paymentProcessor
+    );
+    return await service.adjustSessionCredits(
+      args,
+      context.currentUser.id,
+      context.currentUser?.activeCompanyId
+    );
+  } catch (error: any) {
+    return handleError(error);
+  }
+};
+
 // ═══════════════════════════════════════════
 // EXPORT
 // ═══════════════════════════════════════════
@@ -371,6 +444,7 @@ export const subscriptionResolvers = {
       listUserSubscriptions
     ),
     getActiveSubscription,
+    getFutureSubscriptions,
     getSubscriptionsStats: withPermissions(
       plansPermissions.CREATE_UPDATE_DELETE,
       getSubscriptionsStats
@@ -395,6 +469,10 @@ export const subscriptionResolvers = {
       plansPermissions.CREATE_UPDATE_DELETE,
       radicalCancelSubscription
     ),
+    undoSubscriptionCancellation: withPermissions(
+      plansPermissions.CREATE_UPDATE_DELETE,
+      undoSubscriptionCancellation
+    ),
     adminOverrideSubscription: withPermissions(
       plansPermissions.CREATE_UPDATE_DELETE,
       adminOverrideSubscription
@@ -410,6 +488,10 @@ export const subscriptionResolvers = {
     applySubscriptionCredit: withPermissions(
       plansPermissions.CREATE_UPDATE_DELETE,
       applySubscriptionCredit
+    ),
+    adjustSessionCredits: withPermissions(
+      plansPermissions.CREATE_UPDATE_DELETE,
+      adjustSessionCredits
     ),
   },
 };

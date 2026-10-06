@@ -141,4 +141,71 @@ describe('schedules.util - createScheduleInXWeeks', () => {
     expect(mockEntityManager.create).not.toHaveBeenCalled();
     expect(mockEntityManager.persist).not.toHaveBeenCalled();
   });
+
+  /**
+   * Issue #12: la plantilla siembra su restricción de planes en los schedules
+   * que engendra; sin restricción, siguen naciendo abiertos.
+   */
+  describe('seeding the plan restriction from the template', () => {
+    function createMockCollection(items: any[]): any {
+      let current = [...items];
+      return {
+        getItems: jest.fn(() => current),
+        set: jest.fn((newItems: any[]) => {
+          current = [...newItems];
+        }),
+        isInitialized: jest.fn(() => true),
+        init: jest.fn(async () => {}),
+      };
+    }
+
+    it('debería sembrar los planes de la plantilla en el Schedule creado', async () => {
+      const premiumPlan = { id: 'plan-premium' };
+      mockEntityManager.findOne.mockResolvedValue(null);
+      mockEntityManager.create.mockImplementation((_e: any, data: any) => ({
+        ...data,
+        allowedPlans: createMockCollection([]),
+      }));
+      mockScheduleProgrammed.allowedPlans = createMockCollection([premiumPlan]);
+
+      let created: any;
+      mockEntityManager.persist.mockImplementation((schedule: any) => {
+        created = schedule;
+      });
+
+      await createScheduleInXWeeks(
+        moment('2026-06-07T08:00:00.000Z'),
+        0,
+        1,
+        mockScheduleProgrammed as any,
+        mockEntityManager as any
+      );
+
+      expect(created.allowedPlans.getItems()).toEqual([premiumPlan]);
+    });
+
+    it('debería dejar el Schedule abierto cuando la plantilla no restringe', async () => {
+      mockEntityManager.findOne.mockResolvedValue(null);
+      mockEntityManager.create.mockImplementation((_e: any, data: any) => ({
+        ...data,
+        allowedPlans: createMockCollection([]),
+      }));
+      mockScheduleProgrammed.allowedPlans = createMockCollection([]);
+
+      let created: any;
+      mockEntityManager.persist.mockImplementation((schedule: any) => {
+        created = schedule;
+      });
+
+      await createScheduleInXWeeks(
+        moment('2026-06-07T08:00:00.000Z'),
+        0,
+        1,
+        mockScheduleProgrammed as any,
+        mockEntityManager as any
+      );
+
+      expect(created.allowedPlans.getItems()).toEqual([]);
+    });
+  });
 });

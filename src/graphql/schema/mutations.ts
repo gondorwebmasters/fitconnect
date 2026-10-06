@@ -80,8 +80,27 @@ type Mutation {
     ): TokenizeCardResponse!
 
     # ── Subscription — usuario ────────────────────────────────────────
+    """
+    Anade una suscripcion al Entitlement del miembro. SIEMPRE anade: una
+    suscripcion vigente a otro plan se queda como esta, asi que comprar un
+    Session Pack ya no cuesta la membresia. Ya no se infiere un cambio de plan
+    a partir de "otro plan, inicio hoy" — para cambiar de plan usar changePlan.
+
+    Se rechaza con USER_ALREADY_ACTIVE_IN_PLAN si el miembro ya sostiene una
+    vigente a ese mismo plan; encadenar dos periodos del mismo plan se pide con
+    una fecha de inicio posterior al fin de la vigente (Suscripcion Futura).
+    Ver ADR 0006.
+    """
     createSubscription(subscription: CreateSubscriptionInput!): SubscriptionResponse!
-    """Cambio de plan con prorrateo opcional. Usar en lugar de updateSubscription para cambios de plan."""
+    """
+    Cambio de plan con prorrateo opcional, explicito y nombrando la suscripcion
+    a migrar. Usar en lugar de updateSubscription para cambios de plan — y en
+    lugar de createSubscription, que ya no lo infiere.
+
+    Se rechaza con USER_ALREADY_ACTIVE_IN_PLAN si el miembro ya sostiene una
+    vigente al plan de destino, y sigue sin permitirse un cambio hacia o desde
+    un Session Pack. Ver ADR 0006.
+    """
     changePlan(input: ChangePlanInput!): SubscriptionResponse!
     updateSubscription(subscription: UpdateSubscriptionInput!): SubscriptionResponse!
     """
@@ -104,10 +123,24 @@ type Mutation {
     nextBillingDate. El miembro pierde los dias restantes. Requiere motivo. Ver ADR 0003.
     """
     radicalCancelSubscription(input: RadicalCancelSubscriptionInput!): SubscriptionResponse!
+    """
+    Deshace una cancelacion diferida mientras la suscripcion sigue viva: vuelve a
+    renovar. Solo admin. Rechazada si hay una suscripcion futura al mismo plan
+    (hay que anularla antes con radicalCancelSubscription).
+    """
+    undoSubscriptionCancellation(subscriptionId: ID!): SubscriptionResponse!
     adminOverrideSubscription(input: AdminOverrideSubscriptionInput!): SubscriptionResponse!
     forceRenewal(subscriptionId: ID!): SubscriptionResponse!
     extendSubscriptionPeriod(subscriptionId: ID!, days: Int!, reason: String!): SubscriptionResponse!
     applySubscriptionCredit(subscriptionId: ID!, amountInCents: Int!, reason: String!): SubscriptionResponse!
+    """
+    Ajuste manual auditado de Session Credits (solo admin, mismo permiso que
+    radicalCancelSubscription). Mueve creditsTotal en delta (positivo o
+    negativo, distinto de 0) con motivo obligatorio; queda en el historial como
+    credit_adjusted. Se rechaza sobre suscripciones ilimitadas o cerradas y si
+    el resultado dejaria creditsUsed > creditsTotal o creditsTotal < 0.
+    """
+    adjustSessionCredits(subscriptionId: ID!, delta: Int!, reason: String!): SubscriptionResponse!
 
     # ── Invoice ───────────────────────────────────────────────────────
     voidInvoice(invoiceId: ID!): InvoiceResponse!

@@ -117,6 +117,18 @@ export class Subscription extends BaseEntity {
   @Property({ type: 'smallint', default: 0 })
   failedPaymentAttempts: number = 0;
 
+  /**
+   * Snapshot de `plan.sessionCount` en el momento de crear la suscripción.
+   * null ⇒ créditos ilimitados. Editar el plan después no lo altera.
+   * Ver CONTEXT.md → Session Credit.
+   */
+  @Property({ type: 'smallint', nullable: true })
+  creditsTotal?: number | null;
+
+  /** Session Credits consumidos. Nunca negativo. */
+  @Property({ type: 'smallint', default: 0 })
+  creditsUsed: number = 0;
+
   @Property({ type: 'json', nullable: true })
   metadata?: Record<string, any>;
 
@@ -139,6 +151,18 @@ export class Subscription extends BaseEntity {
 
   get isPastDue(): boolean {
     return this.status === SubscriptionStatus.PAST_DUE;
+  }
+
+  /**
+   * Créditos restantes (derivado, no persistido): creditsTotal − creditsUsed.
+   * null ⇒ ilimitado. No se recorta a 0: creditsUsed > creditsTotal es un
+   * estado inválido que las rutas de consumo/ajuste deben impedir, no ocultar.
+   */
+  get remainingCredits(): number | null {
+    if (this.creditsTotal === null || this.creditsTotal === undefined) {
+      return null;
+    }
+    return this.creditsTotal - (this.creditsUsed ?? 0);
   }
 
   get daysUntilRenewal(): number | null {

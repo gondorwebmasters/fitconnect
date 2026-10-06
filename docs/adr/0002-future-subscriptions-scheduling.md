@@ -1,5 +1,13 @@
 # 0002-future-subscriptions-scheduling
 
+> **Reemplazado en parte por [ADR 0006](./0006-multiple-concurrent-subscriptions.md), decisión 8.**
+> Las decisiones 1, 2 y 3 se escribieron cuando un miembro sostenía una sola
+> suscripción, así que "la suscripción en curso" no era ambigua. Con el
+> **Entitlement** plural, las tres razonan **por plan**: como máximo una futura
+> *por plan*, inicio posterior al fin de la vigente *de ese mismo plan*, y
+> `cancelAtPeriodEnd` automático solo sobre la vigente *del mismo plan*. Las
+> decisiones 4 y 5 siguen vigentes tal cual.
+
 ## Contexto
 
 Los administradores necesitan poder programar suscripciones (gratuitas) para fechas futuras posteriores al fin de período de la suscripción activa actual de un usuario.

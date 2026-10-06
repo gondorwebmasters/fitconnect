@@ -270,6 +270,8 @@ type PlanResponse implements BasicResponse {
     message: String!
     plan: Plan
     plans: [Plan]
+    """Solo lo devuelve archivePlan: cuantos horarios exigian el plan al archivarlo. Se informa, no se bloquea (ADR 0005)."""
+    requiredBySchedules: PlanScheduleRequirement
 }
 
 type SubscriptionHistoryEntry {
@@ -277,6 +279,12 @@ type SubscriptionHistoryEntry {
     actor: String!
     detail: String!
     timestamp: String!
+    """Schedule asociado (eventos credit_consumed / credit_refunded)."""
+    scheduleId: String
+    """Delta aplicado (evento credit_adjusted)."""
+    delta: Int
+    """Motivo del ajuste (evento credit_adjusted)."""
+    reason: String
 }
 
 type SubscriptionHistoryResponse implements BasicResponse {

@@ -52,6 +52,8 @@ describe('ScheduleService - Waitlist and Booking Limits logic', () => {
     mockEntityManager = {
       getRepository: jest.fn(() => mockScheduleRepo),
       findOne: jest.fn(),
+      find: jest.fn(async () => []),
+      nativeUpdate: jest.fn(async () => 1),
       persist: jest.fn(),
       remove: jest.fn(),
       flush: jest.fn(async () => {}),
@@ -287,7 +289,10 @@ describe('ScheduleService - Waitlist and Booking Limits logic', () => {
   });
 
   describe('removeSchedule', () => {
-    it('should throw error when schedule has registered users', async () => {
+    // Borrar con inscritos/waitlist es una cancelación del gym (issue #111):
+    // se reembolsa el crédito a los inscritos y se elimina. Ver
+    // schedule.gym-cancel-refund.test.ts.
+    it('should remove schedule with registered users (gym cancellation)', async () => {
       const currentUser = { id: 'admin-1', contextRole: UserRoleEnum.ADMIN };
       const schedule = new Schedule({
         admin: { id: 'admin-1' } as any,
@@ -298,12 +303,15 @@ describe('ScheduleService - Waitlist and Booking Limits logic', () => {
 
       mockScheduleRepo.findOne.mockResolvedValue(schedule);
 
-      await expect(
-        scheduleService.removeSchedule(currentUser as any, 'sch-1')
-      ).rejects.toThrow(ValidationError);
+      const response = await scheduleService.removeSchedule(
+        currentUser as any,
+        'sch-1'
+      );
+      expect(response.success).toBe(true);
+      expect(mockEntityManager.remove).toHaveBeenCalledWith(schedule);
     });
 
-    it('should throw error when schedule has users in waitlist', async () => {
+    it('should remove schedule with users in waitlist', async () => {
       const currentUser = { id: 'admin-1', contextRole: UserRoleEnum.ADMIN };
       const schedule = new Schedule({
         admin: { id: 'admin-1' } as any,
@@ -314,9 +322,12 @@ describe('ScheduleService - Waitlist and Booking Limits logic', () => {
 
       mockScheduleRepo.findOne.mockResolvedValue(schedule);
 
-      await expect(
-        scheduleService.removeSchedule(currentUser as any, 'sch-1')
-      ).rejects.toThrow(ValidationError);
+      const response = await scheduleService.removeSchedule(
+        currentUser as any,
+        'sch-1'
+      );
+      expect(response.success).toBe(true);
+      expect(mockEntityManager.remove).toHaveBeenCalledWith(schedule);
     });
 
     it('should remove schedule successfully when there are no users and no waitlisted users', async () => {
@@ -1371,11 +1382,13 @@ describe('ScheduleService - getSchedulesRange', () => {
     expect(options.populate).not.toContain('waitListUsers');
     expect(options.strategy).toBe(LoadStrategy.JOINED);
 
-    // Round-trip 2: the second to-many loaded on its own via select-in.
+    // Round-trip 2: the remaining to-many collections loaded on their own via
+    // select-in — including `allowedPlans`, which the per-caller planAccess
+    // resolver reads on every schedule and would otherwise cause an N+1.
     expect(mockEntityManager.populate).toHaveBeenCalledTimes(1);
     const [, populateHint, populateOpts] =
       mockEntityManager.populate.mock.calls[0];
-    expect(populateHint).toEqual(['waitListUsers']);
+    expect(populateHint).toEqual(['waitListUsers', 'allowedPlans']);
     expect(populateOpts.strategy).toBe(LoadStrategy.SELECT_IN);
   });
 

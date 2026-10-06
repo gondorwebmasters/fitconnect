@@ -11,12 +11,17 @@ export const VAL_ERRORS = {
   ADVANCE_BOOKING_OUTSIDE_WINDOW:
     'Schedule is outside the advance booking window',
   USER_ALREADY_IN_SCHEDULE: 'User is already registered for this schedule',
+  PLAN_NOT_ALLOWED_IN_SCHEDULE:
+    'Your current plan does not allow registering for this schedule',
+  PLAN_NOT_IN_COMPANY:
+    'One or more of the selected plans do not belong to this company',
   INCORRECT_PASSWORD: 'Current password is incorrect',
   SCHEDULE_HAS_USERS:
     'Cannot delete schedule because it has registered or waitlisted users',
   MAX_USERS_BELOW_CURRENT:
     'Maximum users cannot be less than the number of registered users',
   START_DATE_MUST_BE_BEFORE_END_DATE: 'startDate must be before endDate.',
+  NO_SESSION_CREDITS: 'No session credits left in the active session pack',
 } as const;
 
 export const NOT_FND_ERRORS = {
@@ -43,6 +48,9 @@ export const BAD_REQUEST_ERRORS = {
     'adminOverride cannot cancel a subscription. Use radicalCancelSubscription for immediate termination, or cancelSubscription for deferred cancellation.',
   DAYS_MUST_BE_POSITIVE: 'Days must be a positive number',
   REASON_REQUIRED: 'A reason is required',
+  CANCELLATION_NOT_SCHEDULED: 'Subscription has no cancellation scheduled',
+  SUBSCRIPTION_ALREADY_CLOSED:
+    'Subscription is already closed: it was canceled or its period has ended',
   CREDIT_AMOUNT_POSITIVE: 'Credit amount must be a positive number',
   CREDIT_EXCEED_PLAN:
     'Credit cannot exceed the plan amount. Use a refund instead.',
@@ -56,25 +64,36 @@ export const BAD_REQUEST_ERRORS = {
   REQUIRED_FIELDS: 'userId, planId and companyId are required',
   TRIAL_PERIOD_NEGATIVE: 'Trial period days cannot be negative',
   INVALID_START_DATE: 'Invalid startDate',
-  CANNOT_SCHEDULE_PLAN_CHANGE_IN_FUTURE:
-    'Cannot schedule a plan change in the future',
   VALID_PM_REQUIRED_REACTIVATE:
     'A valid payment method is required to reactivate the subscription',
   PAID_PLAN_MUST_START_TODAY:
     'Paid subscriptions must start today: they can be scheduled neither in the past nor in the future',
   BACKDATED_PERIOD_ALREADY_ELAPSED:
     'Cannot backdate this subscription: the resulting period has already fully elapsed',
-  FUTURE_SUBSCRIPTION_ALREADY_SCHEDULED:
-    'There is already a future subscription scheduled for this user',
+  SESSION_COUNT_MUST_BE_POSITIVE:
+    'sessionCount must be a positive integer (or null for unlimited)',
+  SESSION_PACK_CANNOT_HAVE_TRIAL:
+    'A session pack (plan with sessionCount) cannot have a trial period',
+  CANNOT_REACTIVATE_SESSION_PACK:
+    'A session pack is single-use and cannot be reactivated. Create a new subscription instead.',
+  CANNOT_CHANGE_PLAN_WITH_SESSION_PACK:
+    'Plan changes into or out of a session pack are not allowed. Cancel and schedule a new subscription instead.',
+  CREDIT_DELTA_INVALID: 'delta must be a non-zero integer',
+  CREDIT_ADJUSTMENT_UNLIMITED:
+    'Cannot adjust credits on an unlimited (non session pack) subscription',
+  CREDIT_ADJUSTMENT_CLOSED:
+    'Cannot adjust credits on a closed subscription (canceled or period elapsed)',
+  CREDIT_ADJUSTMENT_OUT_OF_BOUNDS:
+    'Adjustment rejected: creditsTotal cannot go below creditsUsed or below 0',
 } as const;
 
 export const CONFLICT_ERRORS = {
   USER_ALREADY_ACTIVE_IN_PLAN:
     'User already has an active subscription to this plan',
-  FUTURE_SUBSCRIPTION_ALREADY_SCHEDULED:
-    'There is already a future subscription scheduled for this user',
   BACKDATED_OVERLAPS_EXISTING_ENTITLEMENT:
     'Cannot backdate this subscription: it overlaps an existing active entitlement for this user and company',
+  FUTURE_SUBSCRIPTION_BLOCKS_UNDO:
+    'Cannot undo the cancellation: a future subscription to the same plan is scheduled. Annul it first.',
 } as const;
 
 export const INTERNAL_ERRORS = {

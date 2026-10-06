@@ -90,6 +90,27 @@ type User {
     isSuperAdmin: Boolean
     activeCompanyId: ID
     isPending: Boolean
+    """
+    Auth payload (login / getMe).
+
+    La verdad es **subscriptions**: una entrada por Subscription vigente del
+    miembro en la empresa activa, con sus propios { id, planId, planName,
+    status, endDate, cancelAtPeriodEnd, remainingCredits, creditsTotal }.
+    remainingCredits y creditsTotal son null si esa suscripcion es ilimitada.
+    Los creditos se leen **por suscripcion**: un remainingCredits global no
+    significa nada cuando el miembro sostiene dos Session Packs.
+
+    hasActive (el conjunto no esta vacio) y subscriptionState (agregado sobre
+    todo el conjunto) siguen siendo escalares y no estan deprecados.
+
+    DEPRECADOS: planName, status, isInTrial, trialEndsAt, startDate, endDate,
+    cancelAtPeriodEnd, renewsAt, remainingCredits y creditsTotal son una vista
+    singular del conjunto, conservada para apps antiguas. Resuelven de forma
+    determinista y estable: gana la vigente ilimitada y, en empate o si ninguna
+    lo es, la de periodo mas lejano — de modo que comprar un Session Pack no
+    cambia lo que muestran. No usarlos para decidir nada: leer subscriptions.
+    Ver ADR 0006.
+    """
     subscription: JSON
     permissions: [String]
 }
@@ -109,6 +130,17 @@ type Schedule {
     admin: User!
     state: ScheduleState!
     type: ScheduleType!
+    """Restricted Schedule: planes que admite este schedule. Lista vacia = sin restriccion (abierto a todo el mundo)."""
+    allowedPlans: [Plan!]!
+    """Derivado **por llamante**: si el llamante puede ocupar una plaza en lo que respecta a la restriccion de planes, y por que no. canRegister false tambien impide apuntarse a la lista de espera: no se espera por una plaza que no se podria ocupar. Alcance limitado a esa regla: no absorbe aforo, creditos ni ventana de reserva. No cacheable entre usuarios."""
+    planAccess: SchedulePlanAccess!
+}
+
+"""Resultado por llamante del gate de Restricted Schedule. reason es null cuando canRegister es true. requiredPlans esta vacio en un schedule sin restriccion."""
+type SchedulePlanAccess {
+    canRegister: Boolean!
+    reason: SchedulePlanAccessReason
+    requiredPlans: [Plan!]!
 }
 
 type ScheduleResume {
@@ -132,6 +164,7 @@ type ScheduleProgrammed {
     description: String
     age: Int
     type: ScheduleType
+    allowedPlans: [Plan!]!
 }
     
 type ScheduleOptions {
@@ -244,11 +277,22 @@ type Plan {
     interval: PlanInterval!
     intervalCount: Int!
     trialPeriodDays: Int
+    """Session Pack (Bono): nº de créditos de sesión del plan. null = ilimitado (plan temporal clásico). Un pack nunca tiene trial ni se auto-renueva."""
+    sessionCount: Int
     status: PlanStatus!
     isActive: Boolean!
     features: [String]
     subscriptions: [Subscription]
     metadata: JSON
+    """Restricted Schedule: cuantos horarios exigen este plan. Informativo — archivar el plan nunca se bloquea por esto ni retira la restriccion (ADR 0005); sirve para avisar al administrador antes de que confirme."""
+    requiredBySchedules: PlanScheduleRequirement!
+}
+
+"""Horarios que exigen un plan. scheduleCount cuenta solo los horarios futuros no cancelados; scheduleProgrammedCount, las plantillas semanales que seguirian sembrando la restriccion."""
+type PlanScheduleRequirement {
+    scheduleCount: Int!
+    scheduleProgrammedCount: Int!
+    total: Int!
 }
 
 """
@@ -278,6 +322,12 @@ type Subscription {
     isInTrial: Boolean
     isPastDue: Boolean
     daysUntilRenewal: Int
+    """Snapshot de Plan.sessionCount al crear la suscripción. null = ilimitado."""
+    creditsTotal: Int
+    """Créditos de sesión consumidos."""
+    creditsUsed: Int!
+    """creditsTotal − creditsUsed (derivado). null = ilimitado."""
+    remainingCredits: Int
     metadata: JSON
     transactions: [Transaction]
 }

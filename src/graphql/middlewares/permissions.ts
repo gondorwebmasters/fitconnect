@@ -2,6 +2,27 @@ import { CurrentUser } from '../../types/common.type';
 import { ForbiddenError } from '../../utils/errors.util';
 
 /**
+ * Whether the user holds every required permission, either directly, through
+ * the module's `manage` permission, or through the `*:*` wildcard.
+ */
+export const hasPermissions = (
+  currentUser: CurrentUser | null | undefined,
+  requiredPermissions: string[]
+): boolean => {
+  const userPermissions = currentUser?.permissionNames || [];
+
+  // All permissions wildcard
+  if (userPermissions.includes('*:*')) return true;
+
+  return requiredPermissions.every(p => {
+    if (userPermissions.includes(p)) return true;
+
+    const [module] = p.split(':');
+    return userPermissions.includes(`${module}:manage`);
+  });
+};
+
+/**
  * Require authentication decorator
  */
 export const withPermissions = (
@@ -9,22 +30,7 @@ export const withPermissions = (
   resolver: Function
 ) => {
   return async (parent: any, args: any, context: any, info: any) => {
-    const currentUser = context.currentUser as CurrentUser | null;
-    const userPermissions = currentUser?.permissionNames || [];
-
-    // All permissions wildcard
-    if (userPermissions.includes('*:*')) {
-      return resolver(parent, args, context, info);
-    }
-
-    if (
-      !requiredPermissions.every(p => {
-        if (userPermissions.includes(p)) return true;
-
-        const [module] = p.split(':');
-        return userPermissions.includes(`${module}:manage`);
-      })
-    ) {
+    if (!hasPermissions(context.currentUser, requiredPermissions)) {
       throw new ForbiddenError();
     }
 

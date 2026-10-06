@@ -17,11 +17,18 @@ import { User } from '../entities/User';
 import { UserRole } from '../entities/UserRole';
 import { Currency, UserRoleEnum } from '../types/enums';
 import {
+  AuthSubscriptionSummary,
   CompanyPermissionsContext,
   LoginPermissionsContext,
 } from '../types/permissions';
 
 import { BaseService } from './base.service';
+import {
+  aggregateSubscriptionState,
+  EntitlementService,
+  periodEndOf,
+  selectReportedSubscription,
+} from './entitlement.service';
 
 interface CreatePermissionInput {
   module: PermissionModule;
@@ -39,8 +46,11 @@ export class PermissionService extends BaseService {
     'users:read',
   ];
 
+  private readonly entitlement: EntitlementService;
+
   constructor(em: EntityManager) {
     super(em);
+    this.entitlement = new EntitlementService(em);
   }
 
   // ─────────────────────────────────────────────
@@ -207,33 +217,156 @@ export class PermissionService extends BaseService {
     return subscription?.plan || null;
   }
 
+  /**
+   * La suscripción vigente del miembro en la empresa, con su plan y los
+   * permisos del plan ya populados.
+   *
+   * @remarks Delega en {@link EntitlementService}, el único dueño de la
+   * pregunta (ADR 0006): aquí no vive ninguna consulta propia.
+   */
   async getUserActiveSubscriptionInCompany(
     userId: string,
     companyId: string
   ): Promise<Subscription | null> {
-    const now = moment().toDate();
+    return this.entitlement.findLiveSubscription(userId, companyId, {
+      populate: [
+        'plan',
+        'plan.planPermissions',
+        'plan.planPermissions.permission',
+        'plan.name',
+      ],
+    });
+  }
 
-    return this.em.findOne(
-      Subscription,
-      {
-        user: userId,
-        company: companyId,
-        status: {
-          $in: [SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING],
-        },
-        currentPeriodStart: { $lte: now },
-        currentPeriodEnd: { $gte: now },
-      },
-      {
-        populate: [
-          'plan',
-          'plan.planPermissions',
-          'plan.planPermissions.permission',
-          'plan.name',
-        ],
-        filters: false,
+  /**
+   * El Entitlement del miembro: **todas** sus suscripciones vigentes en la
+   * empresa, con plan y permisos del plan populados.
+   *
+   * @remarks Delega en {@link EntitlementService}, el único dueño de la
+   * pregunta (ADR 0006). Es el punto de partida de la unión de permisos.
+   *
+   * @param userId - Miembro cuyo Entitlement se consulta.
+   * @param companyId - Empresa en la que se consulta.
+   * @returns Las suscripciones vigentes; vacío si el Entitlement está vacío.
+   */
+  async getUserEntitlementInCompany(
+    userId: string,
+    companyId: string
+  ): Promise<Subscription[]> {
+    return this.entitlement.findLiveSubscriptions(userId, companyId, {
+      populate: [
+        'plan',
+        'plan.planPermissions',
+        'plan.planPermissions.permission',
+        'plan.name',
+      ],
+    });
+  }
+
+  // ─────────────────────────────────────────────
+  // UNIÓN DE PERMISOS DEL ENTITLEMENT
+  // ─────────────────────────────────────────────
+
+  /**
+   * Una suscripción vigente tal y como la ve el payload de auth — issue #20.
+   *
+   * @remarks Los créditos se reportan **por suscripción** y no sueltos en el
+   * payload: un `remainingCredits` global no significa nada cuando el miembro
+   * sostiene dos Session Packs (ADR 0006).
+   *
+   * @param subscription - Suscripción vigente, con su plan populado.
+   * @returns La entrada de `subscriptions[]` que le corresponde.
+   */
+  private toAuthSubscriptionSummary(
+    subscription: Subscription
+  ): AuthSubscriptionSummary {
+    const plan = subscription.plan as Plan | undefined;
+
+    return {
+      id: subscription.id,
+      planId: plan?.id ?? null,
+      planName: plan?.name ?? null,
+      status: subscription.status,
+      endDate: periodEndOf(subscription),
+      cancelAtPeriodEnd: subscription.cancelAtPeriodEnd ?? null,
+      remainingCredits: subscription.remainingCredits,
+      creditsTotal: subscription.creditsTotal ?? null,
+    };
+  }
+
+  /**
+   * Los permisos que un plan concede de verdad: los que están activos en ambos
+   * lados de `PlanPermission`.
+   *
+   * @param plan - Plan con `planPermissions` ya populado o inicializado.
+   * @returns Los permisos concedidos por el plan.
+   */
+  private activePermissionsOfPlan(plan: Plan): Permission[] {
+    return plan.planPermissions
+      .getItems()
+      .filter(pp => pp.isActive && pp.permission.isActive)
+      .map(pp => pp.permission);
+  }
+
+  /**
+   * La **unión** de los permisos de los planes de un Entitlement (ADR 0006,
+   * decisión 3): un plan nunca puede *quitar* acceso que otro concede.
+   *
+   * @remarks Sin intersección, sin precedencia y sin permisos negativos — es la
+   * decisión del ADR, no una simplificación pendiente. Por eso el orden del
+   * conjunto es irrelevante y el resultado no depende de él.
+   *
+   * Se deduplica por **nombre**: dos planes que conceden `schedules:read` lo
+   * reportan una vez. Con una sola suscripción el resultado es exactamente el
+   * de antes de la unión.
+   *
+   * No se llama a `planPermissions.init()`: en MikroORM 6 recarga siempre
+   * (`refresh: true`) con los filtros por defecto, y en el login — operación
+   * pública, sin parámetros de `companyContext` — el auto-join a `Plan` revienta
+   * con "No arguments provided for filter". Los llamantes ya populan
+   * `plan.planPermissions.permission`; si alguno no lo hace, `getItems()` falla
+   * en alto.
+   *
+   * @param subscriptions - El Entitlement, con `plan.planPermissions.permission`
+   * ya populado.
+   * @returns Los permisos concedidos por algún plan del conjunto.
+   */
+  private async unitePlanPermissions(
+    subscriptions: Subscription[]
+  ): Promise<Permission[]> {
+    const byName = new Map<string, Permission>();
+
+    for (const subscription of subscriptions) {
+      const plan = subscription.plan;
+
+      for (const permission of this.activePermissionsOfPlan(plan)) {
+        if (!byName.has(permission.name))
+          byName.set(permission.name, permission);
       }
-    );
+    }
+
+    return [...byName.values()];
+  }
+
+  /**
+   * Si un conjunto de permisos concedidos cubre el permiso pedido.
+   *
+   * @remarks Las tres ramas de siempre, en un solo sitio: nombre exacto, el
+   * comodín `*:*`, y `<módulo>:manage`, que implica cualquier acción de su
+   * módulo. La unión no cambia cómo resuelven — solo de dónde sale el conjunto.
+   *
+   * @param grantedNames - Nombres de los permisos concedidos.
+   * @param permissionName - Permiso pedido, p. ej. `schedules:read`.
+   * @returns Si el conjunto concedido cubre el permiso pedido.
+   */
+  private grantsPermission(
+    grantedNames: Set<string>,
+    permissionName: string
+  ): boolean {
+    if (grantedNames.has(permissionName)) return true;
+    if (grantedNames.has('*:*')) return true;
+    const [module] = permissionName.split(':');
+    return grantedNames.has(`${module}:manage`);
   }
 
   /**
@@ -342,22 +475,18 @@ export class PermissionService extends BaseService {
       });
     }
 
-    const subscription = await this.getUserActiveSubscriptionInCompany(
+    const entitlement = await this.getUserEntitlementInCompany(
       userId,
       companyId
     );
-    if (!subscription) return false;
+    if (entitlement.length === 0) return false;
 
-    const plan = subscription.plan;
-    await plan.planPermissions.init();
+    const granted = await this.unitePlanPermissions(entitlement);
 
-    return plan.planPermissions.getItems().some(pp => {
-      if (!pp.isActive || !pp.permission.isActive) return false;
-      if (pp.permission.name === permissionName) return true;
-      if (pp.permission.name === '*:*') return true;
-      const [module] = permissionName.split(':');
-      return pp.permission.name === `${module}:manage`;
-    });
+    return this.grantsPermission(
+      new Set(granted.map(p => p.name)),
+      permissionName
+    );
   }
 
   async getUserPermissionsInCompany(
@@ -390,19 +519,12 @@ export class PermissionService extends BaseService {
         .map(pp => pp.permission);
     }
 
-    const subscription = await this.getUserActiveSubscriptionInCompany(
+    const entitlement = await this.getUserEntitlementInCompany(
       userId,
       companyId
     );
-    if (!subscription) return [];
 
-    const plan = subscription.plan;
-    await plan.planPermissions.init();
-
-    return plan.planPermissions
-      .getItems()
-      .filter(pp => pp.isActive && pp.permission.isActive)
-      .map(pp => pp.permission);
+    return this.unitePlanPermissions(entitlement);
   }
 
   async getUserActiveSubscriptions(userId: string): Promise<Subscription[]> {
@@ -436,12 +558,9 @@ export class PermissionService extends BaseService {
     );
     const userPermissionNames = new Set(userPermissions.map(p => p.name));
 
-    return permissionNames.every(name => {
-      if (userPermissionNames.has(name)) return true;
-      if (userPermissionNames.has('*:*')) return true;
-      const [module] = name.split(':');
-      return userPermissionNames.has(`${module}:manage`);
-    });
+    return permissionNames.every(name =>
+      this.grantsPermission(userPermissionNames, name)
+    );
   }
 
   async userHasAnyPermission(
@@ -455,12 +574,9 @@ export class PermissionService extends BaseService {
     );
     const userPermissionNames = new Set(userPermissions.map(p => p.name));
 
-    return permissionNames.some(name => {
-      if (userPermissionNames.has(name)) return true;
-      if (userPermissionNames.has('*:*')) return true;
-      const [module] = name.split(':');
-      return userPermissionNames.has(`${module}:manage`);
-    });
+    return permissionNames.some(name =>
+      this.grantsPermission(userPermissionNames, name)
+    );
   }
 
   /** @deprecated Use userHasPermissionInCompany */
@@ -592,6 +708,7 @@ export class PermissionService extends BaseService {
     if (user.isSuperAdmin) {
       return {
         hasActiveSubscription: false,
+        subscriptions: [],
         subscriptionState: SubscriptionAccessState.NONE,
         plan: null,
         permissions: [],
@@ -602,6 +719,8 @@ export class PermissionService extends BaseService {
         startDate: null,
         endDate: null,
         cancelAtPeriodEnd: null,
+        remainingCredits: null,
+        creditsTotal: null,
       };
     }
 
@@ -617,26 +736,47 @@ export class PermissionService extends BaseService {
         isActive: true,
       });
 
+      const coachPlan = {
+        id: 'coach-free-plan',
+        name: 'Plan de Entrenador',
+        amount: 0,
+        currency: Currency.EUR,
+        interval: 'lifetime',
+      };
+      const coachSubscriptionId = 'coach-free-sub';
+
       return {
         hasActiveSubscription: true,
+        // El coach no sostiene ninguna suscripción real: su entrada es
+        // sintética, igual que su plan, para que `subscriptions[]` y los
+        // escalares no se contradigan. Sale del mismo `coachPlan` que ellos
+        // para que no puedan divergir.
+        subscriptions: [
+          {
+            id: coachSubscriptionId,
+            planId: coachPlan.id,
+            planName: coachPlan.name,
+            status: SubscriptionStatus.ACTIVE,
+            endDate: null,
+            cancelAtPeriodEnd: null,
+            remainingCredits: null,
+            creditsTotal: null,
+          },
+        ],
         subscriptionState: SubscriptionAccessState.ACTIVE,
-        plan: {
-          id: 'coach-free-plan',
-          name: 'Plan de Entrenador',
-          amount: 0,
-          currency: Currency.EUR,
-          interval: 'lifetime',
-        } as any,
+        plan: coachPlan as any,
         permissions,
         permissionNames: this.coachPermissionNames,
         subscriptionStatus: SubscriptionStatus.ACTIVE,
-        subscriptionId: 'coach-free-sub',
+        subscriptionId: coachSubscriptionId,
         trialEndsAt: null,
         renewsAt: null,
         isInTrial: false,
         startDate: null,
         endDate: null,
         cancelAtPeriodEnd: null,
+        remainingCredits: null,
+        creditsTotal: null,
       };
     }
 
@@ -647,6 +787,7 @@ export class PermissionService extends BaseService {
       if (!adminSubscription) {
         return {
           hasActiveSubscription: false,
+          subscriptions: [],
           subscriptionState: SubscriptionAccessState.NONE,
           plan: null,
           permissions: [],
@@ -657,6 +798,8 @@ export class PermissionService extends BaseService {
           startDate: null,
           endDate: null,
           cancelAtPeriodEnd: null,
+          remainingCredits: null,
+          creditsTotal: null,
         };
       }
 
@@ -668,6 +811,7 @@ export class PermissionService extends BaseService {
 
       return {
         hasActiveSubscription: true,
+        subscriptions: [this.toAuthSubscriptionSummary(adminSubscription)],
         plan: {
           id: plan.id,
           name: plan.name,
@@ -692,15 +836,20 @@ export class PermissionService extends BaseService {
           adminSubscription.trialEnd ||
           null,
         cancelAtPeriodEnd: adminSubscription.cancelAtPeriodEnd ?? null,
+        remainingCredits: adminSubscription.remainingCredits,
+        creditsTotal: adminSubscription.creditsTotal ?? null,
       };
     }
 
-    const subscription = await this.getUserActiveSubscriptionInCompany(
+    const entitlement = await this.getUserEntitlementInCompany(
       user.id,
       companyId
     );
-
-    if (!subscription) {
+    // `hasActive` y `subscriptionState` se leen sobre el **conjunto**, no sobre
+    // "la" suscripción (ADR 0006, decisiones 4 y 10): acceso general mientras el
+    // Entitlement no esté vacío, y `ACTIVE` por encima de cualquier estado que
+    // dejen las no vigentes — vigente en un plan y caducado en otro es `ACTIVE`.
+    if (entitlement.length === 0) {
       const inactiveState = await this.resolveInactiveMemberSubscriptionState(
         user.id,
         companyId
@@ -708,7 +857,11 @@ export class PermissionService extends BaseService {
 
       return {
         hasActiveSubscription: false,
-        subscriptionState: inactiveState.state,
+        subscriptions: [],
+        subscriptionState: aggregateSubscriptionState(
+          entitlement,
+          inactiveState.state
+        ),
         plan: null,
         permissions: [],
         permissionNames: [],
@@ -718,17 +871,25 @@ export class PermissionService extends BaseService {
         startDate: inactiveState.startDate,
         endDate: inactiveState.endDate,
         cancelAtPeriodEnd: null,
+        remainingCredits: null,
+        creditsTotal: null,
       };
     }
 
+    // `subscriptions[]` es la verdad del payload. Los escalares siguen ahí,
+    // deprecados, y resuelven con la regla determinista y estable de
+    // `selectReportedSubscription` (issue #20, ADR 0006): comprar un Session
+    // Pack no puede cambiar lo que muestra una app antigua.
+    // Non-null: el Entitlement no está vacío, se acaba de comprobar arriba.
+    const subscription = selectReportedSubscription(entitlement)!;
     const plan = subscription.plan;
-    const permissions = plan.planPermissions
-      .getItems()
-      .filter(pp => pp.isActive && pp.permission.isActive)
-      .map(pp => pp.permission);
+    const permissions = await this.unitePlanPermissions(entitlement);
 
     return {
-      hasActiveSubscription: true,
+      hasActiveSubscription: entitlement.length > 0,
+      subscriptions: entitlement.map(live =>
+        this.toAuthSubscriptionSummary(live)
+      ),
       plan: {
         id: plan.id,
         name: plan.name,
@@ -736,7 +897,10 @@ export class PermissionService extends BaseService {
         currency: plan.currency,
         interval: plan.interval,
       },
-      subscriptionState: SubscriptionAccessState.ACTIVE,
+      subscriptionState: aggregateSubscriptionState(
+        entitlement,
+        SubscriptionAccessState.NONE
+      ),
       permissions,
       permissionNames: permissions.map(p => p.name),
       subscriptionStatus: subscription.status,
@@ -748,6 +912,8 @@ export class PermissionService extends BaseService {
         subscription.currentPeriodStart || subscription.trialStart || null,
       endDate: subscription.currentPeriodEnd || subscription.trialEnd || null,
       cancelAtPeriodEnd: subscription.cancelAtPeriodEnd ?? null,
+      remainingCredits: subscription.remainingCredits,
+      creditsTotal: subscription.creditsTotal ?? null,
     };
   }
 
@@ -765,14 +931,29 @@ export class PermissionService extends BaseService {
     const subscriptions = await this.getUserActiveSubscriptions(userId);
     const companiesContext: CompanyPermissionsContext[] = [];
 
+    // Una entrada por empresa, no por suscripción: el Entitlement del miembro
+    // en esa empresa es el conjunto, y sus permisos son la unión (ADR 0006).
+    // La unión nunca cruza empresas — un plan de un gimnasio no concede nada en
+    // otro.
+    const byCompany = new Map<string, Subscription[]>();
     for (const subscription of subscriptions) {
-      const plan = subscription.plan;
-      await plan.planPermissions.init();
+      const companyId = subscription.company.id;
+      const soFar = byCompany.get(companyId) ?? [];
+      soFar.push(subscription);
+      byCompany.set(companyId, soFar);
+    }
 
-      const permissions = plan.planPermissions
-        .getItems()
-        .filter(pp => pp.isActive && pp.permission.isActive)
-        .map(pp => pp.permission);
+    for (const companySubscriptions of byCompany.values()) {
+      const permissions = await this.unitePlanPermissions(companySubscriptions);
+      // Los campos singulares (plan, estado, renovación) siguen siendo los de
+      // una suscripción cualquiera del conjunto, como hoy. **No** se les aplica
+      // la regla determinista del issue #20: `getUserActiveSubscriptions`
+      // filtra solo por estado, así que su conjunto incluye Suscripciones
+      // Futuras, y la regla elegiría precisamente una de ellas (ilimitada y con
+      // el periodo más lejano). Arreglarlo pide que este listado salga del
+      // Entitlement, que es trabajo aparte.
+      const subscription = companySubscriptions[0];
+      const plan = subscription.plan;
 
       companiesContext.push({
         companyId: subscription.company.id,

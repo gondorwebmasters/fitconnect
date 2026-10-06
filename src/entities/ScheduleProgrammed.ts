@@ -3,6 +3,7 @@ import {
   Entity,
   EntityRepositoryType,
   Filter,
+  ManyToMany,
   ManyToOne,
   OneToMany,
   Property,
@@ -13,6 +14,7 @@ import { ScheduleType } from '../types/enums';
 
 import { BaseEntity } from './BaseEntity';
 import { Company } from './Company';
+import { Plan } from './Plan';
 import { Schedule } from './Schedule';
 import { User } from './User';
 
@@ -50,6 +52,25 @@ export class ScheduleProgrammed extends BaseEntity {
 
   @Property({ nullable: true })
   age: number | null;
+
+  /**
+   * Restricted Schedule sobre la plantilla semanal: planes que admiten los
+   * schedules que engendra. Colección vacía ⇒ plantilla sin restricción, que
+   * sigue engendrando schedules abiertos.
+   *
+   * La plantilla **siembra** esta restricción en cada schedule que crea; un
+   * schedule puede divergir después, pero editar la plantilla vuelve a pisar
+   * la de todos los futuros, igual que hace con título, aforo, tipo o coach
+   * (issue #12). Ver CONTEXT.md → Restricted Schedule.
+   */
+  @ManyToMany({
+    entity: () => Plan,
+    owner: true,
+    pivotTable: 'schedule_programmed_allowed_plans',
+    joinColumn: 'schedule_programmed_id',
+    inverseJoinColumn: 'plan_id',
+  })
+  allowedPlans = new Collection<Plan>(this);
 
   @OneToMany(() => Schedule, schedule => schedule.scheduleProgrammed)
   schedules = new Collection<Schedule>(this);

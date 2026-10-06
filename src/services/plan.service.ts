@@ -1,9 +1,13 @@
 import { EntityManager, FilterQuery, QueryOrder } from '@mikro-orm/core';
 
 import { Plan, PlanInterval, PlanStatus } from '../entities/Plan';
+import { Schedule } from '../entities/Schedule';
+import { ScheduleProgrammed } from '../entities/ScheduleProgrammed';
 import { ServiceResponse } from '../types/common.type';
+import { ScheduleState } from '../types/enums';
 import {
   BadRequestError,
+  BAD_REQUEST_ERRORS,
   createServiceResponse,
   NotFoundError,
 } from '../utils/errors.util';
@@ -19,6 +23,8 @@ export interface CreatePlanInput {
   interval: PlanInterval;
   intervalCount?: number;
   trialPeriodDays?: number;
+  /** Session Pack: nº de créditos. null/undefined ⇒ ilimitado. */
+  sessionCount?: number | null;
   features?: string[];
   metadata?: Record<string, any>;
   companyId?: string;
@@ -29,10 +35,25 @@ export interface UpdatePlanInput {
   name?: string;
   description?: string;
   amount?: number;
+  trialPeriodDays?: number | null;
+  /** Session Pack: nº de créditos. null ⇒ vuelve a ilimitado. */
+  sessionCount?: number | null;
   features?: string[];
   metadata?: Record<string, any>;
   status?: PlanStatus;
   isActive?: boolean;
+}
+
+/**
+ * Cuántos horarios exigen un plan (Restricted Schedule). `scheduleCount`
+ * cuenta solo los horarios que quedan por delante y no están cancelados —los
+ * pasados ya no admiten a nadie—, y `scheduleProgrammedCount` las plantillas
+ * semanales, que seguirían sembrando la restricción cada semana.
+ */
+export interface PlanScheduleRequirement {
+  scheduleCount: number;
+  scheduleProgrammedCount: number;
+  total: number;
 }
 
 export class PlanService extends BaseService {
@@ -60,6 +81,8 @@ export class PlanService extends BaseService {
       throw new BadRequestError('amount must be greater than or equal to 0');
     }
 
+    this.assertValidSessionPack(input.sessionCount, input.trialPeriodDays);
+
     // Verificar nombre único por empresa
     const existing = await this.em.findOne(
       Plan,
@@ -84,6 +107,7 @@ export class PlanService extends BaseService {
       interval: input.interval,
       intervalCount: input.intervalCount ?? 1,
       trialPeriodDays: input.trialPeriodDays,
+      sessionCount: input.sessionCount ?? null,
       features: input.features,
       metadata: input.metadata,
       company: input.companyId,
@@ -113,6 +137,8 @@ export class PlanService extends BaseService {
    * Nota: cambiar el `amount` de un plan no afecta a las suscripciones activas
    * — estas siguen con el precio original hasta que se renueven o se migren
    * explícitamente. Implementa esa lógica en SubscriptionService si la necesitas.
+   * Lo mismo aplica a `sessionCount`: los créditos se snapshotean en la
+   * suscripción al crearla, así que editar el plan nunca altera packs ya vendidos.
    */
   async updatePlan(input: UpdatePlanInput): Promise<ServiceResponse> {
     if (!input.id) {
@@ -128,12 +154,28 @@ export class PlanService extends BaseService {
       throw new NotFoundError('Plan');
     }
 
+    // Validar la combinación resultante (no solo lo que viene en el input)
+    // antes de mutar nada, para que un rechazo deje el plan intacto.
+    const nextSessionCount =
+      input.sessionCount !== undefined ? input.sessionCount : plan.sessionCount;
+    const nextTrialDays =
+      input.trialPeriodDays !== undefined
+        ? input.trialPeriodDays
+        : plan.trialPeriodDays;
+    this.assertValidSessionPack(nextSessionCount, nextTrialDays);
+
     if (input.name !== undefined) plan.name = input.name;
     if (input.description !== undefined) plan.description = input.description;
     if (input.amount !== undefined) {
       if (input.amount < 0)
         throw new BadRequestError('amount must be greater than or equal to 0');
       plan.amount = input.amount;
+    }
+    if (input.trialPeriodDays !== undefined) {
+      plan.trialPeriodDays = input.trialPeriodDays ?? undefined;
+    }
+    if (input.sessionCount !== undefined) {
+      plan.sessionCount = input.sessionCount;
     }
     if (input.features !== undefined) plan.features = input.features;
     if (input.metadata !== undefined) {
@@ -163,6 +205,30 @@ export class PlanService extends BaseService {
     return createServiceResponse(200, 'Plan updated successfully', true, {
       plan,
     });
+  }
+
+  /**
+   * Reglas de un Session Pack (ver CONTEXT.md):
+   *  - `sessionCount`, si está informado, es un entero > 0.
+   *  - Un pack nunca lleva trial.
+   * Con `sessionCount` null/undefined no se aplica ninguna regla nueva.
+   */
+  private assertValidSessionPack(
+    sessionCount: number | null | undefined,
+    trialPeriodDays: number | null | undefined
+  ): void {
+    if (sessionCount === null || sessionCount === undefined) return;
+
+    if (!Number.isInteger(sessionCount) || sessionCount <= 0) {
+      throw new BadRequestError(
+        BAD_REQUEST_ERRORS.SESSION_COUNT_MUST_BE_POSITIVE
+      );
+    }
+    if ((trialPeriodDays ?? 0) > 0) {
+      throw new BadRequestError(
+        BAD_REQUEST_ERRORS.SESSION_PACK_CANNOT_HAVE_TRIAL
+      );
+    }
   }
 
   /**
@@ -260,13 +326,52 @@ export class PlanService extends BaseService {
       throw new NotFoundError('Plan');
     }
 
+    // Se cuenta antes de archivar, que es el estado del que se avisa. El
+    // recuento no decide nada: archivar nunca se rechaza por él (ADR 0005).
+    const requiredBySchedules = await this.countSchedulesRequiringPlan(planId);
+
     plan.isActive = false;
     plan.status = PlanStatus.ARCHIVED;
     await this.em.flush();
 
     return createServiceResponse(200, 'Plan archived successfully', true, {
       plan,
+      requiredBySchedules,
     });
+  }
+
+  /**
+   * Cuenta los horarios y plantillas semanales que exigen este plan
+   * (Restricted Schedule, ADR 0005).
+   *
+   * @remarks Es informativo: alimenta el aviso con el que el administrador
+   * confirma el archivado. Archivar no se bloquea nunca y la restricción no se
+   * retira sola, así que el recuento sigue siendo el mismo después de
+   * archivar. Se usa `count()`, no SQL crudo, para que el filtro
+   * `companyContext` siga aplicando.
+   *
+   * @param planId - Plan por el que se pregunta.
+   * @returns Horarios futuros vivos, plantillas semanales, y la suma.
+   */
+  async countSchedulesRequiringPlan(
+    planId: string
+  ): Promise<PlanScheduleRequirement> {
+    const [scheduleCount, scheduleProgrammedCount] = await Promise.all([
+      this.em.count(Schedule, {
+        allowedPlans: planId,
+        startDate: { $gte: new Date() },
+        state: { $ne: ScheduleState.CANCELLED },
+      } as FilterQuery<Schedule>),
+      this.em.count(ScheduleProgrammed, {
+        allowedPlans: planId,
+      } as FilterQuery<ScheduleProgrammed>),
+    ]);
+
+    return {
+      scheduleCount,
+      scheduleProgrammedCount,
+      total: scheduleCount + scheduleProgrammedCount,
+    };
   }
 
   /**

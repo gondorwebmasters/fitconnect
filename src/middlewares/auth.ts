@@ -45,6 +45,7 @@ export const authenticateUser = async (
 
       let permissions: LoginPermissionsContext = {
         hasActiveSubscription: false,
+        subscriptions: [],
         subscriptionState: SubscriptionAccessState.NONE,
         plan: null,
         permissions: [],
