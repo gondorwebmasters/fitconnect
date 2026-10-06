@@ -7650,6 +7650,19 @@
       ],
       "checks": [],
       "foreignKeys": {
+        "user_schedules_paid_by_subscription_id_foreign": {
+          "columnNames": [
+            "paid_by_subscription_id"
+          ],
+          "constraintName": "user_schedules_paid_by_subscription_id_foreign",
+          "localTableName": "public.user_schedules",
+          "referencedTableName": "public.subscription",
+          "referencedColumnNames": [
+            "id"
+          ],
+          "updateRule": "cascade",
+          "deleteRule": "set null"
+        },
         "user_schedules_schedule_id_foreign": {
           "columnNames": [
             "schedule_id"
@@ -7675,19 +7688,6 @@
           ],
           "updateRule": "cascade",
           "deleteRule": "cascade"
-        },
-        "user_schedules_paid_by_subscription_id_foreign": {
-          "columnNames": [
-            "paid_by_subscription_id"
-          ],
-          "constraintName": "user_schedules_paid_by_subscription_id_foreign",
-          "localTableName": "public.user_schedules",
-          "referencedTableName": "public.subscription",
-          "referencedColumnNames": [
-            "id"
-          ],
-          "updateRule": "cascade",
-          "deleteRule": "set null"
         }
       },
       "nativeEnums": {},
